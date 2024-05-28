@@ -1,0 +1,9 @@
+title = "Gitleaks Configuration"
+
+[extend]
+useDefault = true
+[allowlist]
+description = "global allow list"
+paths = [
+    '''README.md''','''.idea''','''.vscode'''
+]
