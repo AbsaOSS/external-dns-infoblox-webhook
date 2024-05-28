@@ -1,0 +1,27 @@
+# Ignore everything
+*
+
+# But not these files...
+!/.gitignore
+
+!*.go
+!go.sum
+!go.mod
+
+!Makefile
+!*.yaml
+
+!.release-please-manifest.json
+!release-please-config.json
+!.goreleaser.yml
+!.gitleaks.toml
+!.yamllint
+!.golangci.toml
+!Dockerfile
+!CODEOWNERS
+!README.md
+!LICENSE
+!renovate.json
+
+# ...even if they are in subdirectories
+!*/
