@@ -1,0 +1,9 @@
+# Ignore everything
+*
+
+# But inject license into these files...
+!Makefile
+!*.go
+!Dockerfile*
+!*.yaml
+!.golic.yaml

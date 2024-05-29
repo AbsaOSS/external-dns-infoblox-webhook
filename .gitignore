@@ -17,6 +17,8 @@
 !.gitleaks.toml
 !.yamllint
 !.golangci.toml
+!.golic.yaml
+!.licignore
 !Dockerfile
 !CODEOWNERS
 !README.md
