@@ -195,12 +195,12 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 
 	for _, zone := range zones {
 		log.Debugf("fetch records from zone '%s'", zone.Fqdn)
-		searchParams := recordQueryParams(zone.Fqdn, p.config.View)
+		searchParams := map[string]string{"zone": zone.Fqdn, "view": p.config.View}
 		var resA []ibclient.RecordA
 		objA := ibclient.NewEmptyRecordA()
 		objA.View = p.config.View
 		objA.Zone = zone.Fqdn
-		err = p.client.GetObject(objA, "", searchParams, &resA)
+		err = PagingGetObject(p.client, objA, "", searchParams, &resA)
 		if err != nil && !isNotFoundError(err) {
 			return nil, fmt.Errorf("could not fetch A records from zone '%s': %w", zone.Fqdn, err)
 		}
@@ -212,7 +212,7 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 		objH := ibclient.NewEmptyHostRecord()
 		objH.View = &p.config.View
 		objH.Zone = zone.Fqdn
-		err = p.client.GetObject(objH, "", searchParams, &resH)
+		err = PagingGetObject(p.client, objH, "", searchParams, &resH)
 		if err != nil && !isNotFoundError(err) {
 			return nil, fmt.Errorf("could not fetch host records from zone '%s': %w", zone.Fqdn, err)
 		}
@@ -223,7 +223,7 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 		objC := ibclient.NewEmptyRecordCNAME()
 		objC.View = &p.config.View
 		objC.Zone = zone.Fqdn
-		err = p.client.GetObject(objC, "", searchParams, &resC)
+		err = PagingGetObject(p.client, objC, "", searchParams, &resC)
 		if err != nil && !isNotFoundError(err) {
 			return nil, fmt.Errorf("could not fetch CNAME records from zone '%s': %w", zone.Fqdn, err)
 		}
@@ -234,7 +234,7 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 		objT := ibclient.NewEmptyRecordTXT()
 		objT.View = &p.config.View
 		objT.Zone = zone.Fqdn
-		err = p.client.GetObject(objT, "", searchParams, &resT)
+		err = PagingGetObject(p.client, objT, "", searchParams, &resT)
 		if err != nil && !isNotFoundError(err) {
 			return nil, fmt.Errorf("could not fetch TXT records from zone '%s': %w", zone.Fqdn, err)
 		}
