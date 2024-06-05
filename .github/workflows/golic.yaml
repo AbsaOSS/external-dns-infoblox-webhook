@@ -17,8 +17,6 @@
 name: GoLic
 on:
   push:
-    paths-ignore:
-      - '**.md'
   pull_request:
     branches:
       - main
