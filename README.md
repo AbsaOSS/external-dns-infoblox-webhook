@@ -74,7 +74,7 @@ Read data by HTTP GET to `/records`, see:
 curl -H 'Accept: application/external.dns.webhook+json;version=1' localhost:8888/records
 ```
 If you set DOMAIN_FILTER, DNS will return all records from this domain(s). Because the returned data for a given
-domain can be robust - in some cases tens of thousands of records, it is advisable to use filters to reduce the 
+domain can be large - in some cases tens of thousands of records, it is advisable to use filters to reduce the 
 data to the desired result. Filters are specified via environment variables: `DOMAIN_FILTER`,`EXCLUDE_DOMAIN_FILTER`,
 `REGEXP_DOMAIN_FILTER`,`REGEXP_DOMAIN_FILTER_EXCLUSION`,`REGEXP_NAME_FILTER`.
 
