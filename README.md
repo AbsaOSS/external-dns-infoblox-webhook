@@ -69,8 +69,26 @@ Infoblox Provider is a simple web server with several clearly defined routers:
 | /adjustendpoints | POST   |
 
 #### Reading Data
+Read data by HTTP GET to `/records`, see:
 ```shell
 curl -H 'Accept: application/external.dns.webhook+json;version=1' localhost:8888/records
+```
+If you set DOMAIN_FILTER, DNS will return all records from this domain(s). Because the returned data for a given
+domain can be large - in some cases tens of thousands of records, it is advisable to use filters to reduce the 
+data to the desired result. Filters are specified via environment variables: `DOMAIN_FILTER`,`EXCLUDE_DOMAIN_FILTER`,
+`REGEXP_DOMAIN_FILTER`,`REGEXP_DOMAIN_FILTER_EXCLUSION`,`REGEXP_NAME_FILTER`.
+
+The following example demonstrates the use of a filter:
+```shell
+# We are looking for all records in these two domains. 
+# Unfortunately, they may contain tens of thousands of records.
+DOMAIN_FILTER=org.eu.cloud.example.com,org-hq.us.cloud.example.com
+
+# Using regex, we further restrict the domains to org.eu.cloud.example.comorg-hq.us.cloud.example.com
+REGEXP_DOMAIN_FILTER=(eu.cloud|org-hq.us).cloud.example.com
+
+# Finally, we filter only those records that have `my-project.org-hq` or `.us.cloud` in the name
+REGEXP_NAME_FILTER=(my-project.org-hq|.us.cloud)
 ```
 
 #### Writing Data
