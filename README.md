@@ -84,7 +84,8 @@ The following example demonstrates the use of a filter:
 # Unfortunately, they may contain tens of thousands of records.
 DOMAIN_FILTER=org.eu.cloud.example.com,org-hq.us.cloud.example.com
 
-# Using regex, we further restrict the domains to org.eu.cloud.example.comorg-hq.us.cloud.example.com
+# If DOMAIN_FILTER is not enough, you can use regex. Once you use REGEXP_DOMAIN_FILTER, DOMAIN_FILTER will be ignored.
+# In following example we restrict zones to *.eu.cloud.example.com or *.org-hq.us.cloud.example.com.
 REGEXP_DOMAIN_FILTER=(eu.cloud|org-hq.us).cloud.example.com
 
 # Finally, we filter only those records that have `my-project.org-hq` or `.us.cloud` in the name
@@ -109,15 +110,15 @@ curl -X POST -H 'Accept: application/external.dns.webhook+json;version=1;' -H 'C
 
 Create `test.cloud.example.com`
 ```json
-{"Create":null,"UpdateOld":[{"dnsName":"test.cloud.example.com","targets":["1.3.2.1"],"recordType":"A","recordTTL":300}],"UpdateNew":null,"Delete":null}
+{"Create":null,"UpdateOld":null,"UpdateNew":[{"dnsName":"test.cloud.example.com","targets":["1.3.2.1"],"recordType":"A","recordTTL":300}],"Delete":null}
 ```
 
-Update `test.cloud.example.com`
+Update `test.cloud.example.com` (DELETE one record `test.cloud.example.com` and CREATE two records `new-test.cloud.example.com`)
 ```json
-{"Create":null,"UpdateOld":[{"dnsName":"test.cloud.example.com","targets":["1.3.2.1"],"recordType":"A","recordTTL":300}],"UpdateNew":null,"Delete":[{"dnsName":"new-test.cloud.example.com","targets":["1.2.3.4","4.3.2.1"],"recordType":"A","recordTTL":300}]}
+{"Create":null,"UpdateOld":[{"dnsName":"test.cloud.example.com","targets":["1.3.2.1"],"recordType":"A","recordTTL":300}],"UpdateNew":[{"dnsName":"new-test.cloud.example.com","targets":["1.2.3.4","4.3.2.1"],"recordType":"A","recordTTL":300}],"Delete":null}
 ```
 
 Delete `test-new.cloud.example.com`
 ```json
-{"Create":null,"UpdateOld":null,"UpdateNew":null,"Delete":[{"dnsName":"new-test.cloud.example.","targets":["1.2.3.4","4.3.2.1"],"recordType":"A","recordTTL":300}]}
+{"Create":null,"UpdateOld":[{"dnsName":"new-test.cloud.example.","targets":["1.2.3.4","4.3.2.1"],"recordType":"A","recordTTL":300}],"UpdateNew":null,"Delete":null}
 ```
