@@ -32,6 +32,7 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"sigs.k8s.io/external-dns/endpoint"
+	"sigs.k8s.io/external-dns/pkg/rfc2317"
 	"sigs.k8s.io/external-dns/plan"
 	"sigs.k8s.io/external-dns/provider"
 )
@@ -240,6 +241,54 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 		}
 		endpointsTXT := ToTXTResponseMap(resT).ToEndpoints()
 		endpoints = append(endpoints, endpointsTXT...)
+
+		if p.config.CreatePTR {
+			arpaZone, err := rfc2317.CidrToInAddr(zone.Fqdn)
+			if err == nil {
+				var resP []ibclient.RecordPTR
+				objP := ibclient.NewEmptyRecordPTR()
+				objP.View = p.config.View
+				objP.Zone = arpaZone
+				err = PagingGetObject(p.client, objP, "", map[string]string{"zone": arpaZone, "view": p.config.View}, &resP)
+				if err != nil && !isNotFoundError(err) {
+					return nil, fmt.Errorf("could not fetch PTR records from zone '%s': %w", zone.Fqdn, err)
+				}
+				endpointsPTR := ToPTRResponseMap(resP).ToEndpoints()
+				endpoints = append(endpoints, endpointsPTR...)
+			} else {
+				log.Debugf("Could not fetch PTR records from zone '%s': %s", zone.Fqdn, err)
+			}
+		}
+	}
+
+	if p.config.CreatePTR {
+		// save all ptr records into map for a quick look up
+		ptrRecordsMap := make(map[string]bool)
+		for _, ptrRecord := range endpoints {
+			if ptrRecord.RecordType != endpoint.RecordTypePTR {
+				continue
+			}
+			ptrRecordsMap[ptrRecord.DNSName] = true
+		}
+
+		for i := range endpoints {
+			if endpoints[i].RecordType != endpoint.RecordTypeA {
+				continue
+			}
+			// if PTR record already exists for A record, then mark it as such
+			if ptrRecordsMap[endpoints[i].DNSName] {
+				found := false
+				for j := range endpoints[i].ProviderSpecific {
+					if endpoints[i].ProviderSpecific[j].Name == providerSpecificInfobloxPtrRecord {
+						endpoints[i].ProviderSpecific[j].Value = "true"
+						found = true
+					}
+				}
+				if !found {
+					endpoints[i].WithProviderSpecific(providerSpecificInfobloxPtrRecord, "true")
+				}
+			}
+		}
 	}
 
 	log.Debugf("fetched %d records from infoblox", len(endpoints))

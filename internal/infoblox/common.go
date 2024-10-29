@@ -101,31 +101,20 @@ func ToHostResponseMap(res []ibclient.HostRecord) *ResponseMap {
 	return rm
 }
 
-// TODO: ToPTRResponseMap
-//if p.createPTR {
-//	// infoblox doesn't accept reverse zone's fqdn, and instead expects .in-addr.arpa zone
-//	// so convert our zone fqdn (if it is a correct cidr block) into in-addr.arpa address and pass that into infoblox
-//	// example: 10.196.38.0/24 becomes 38.196.10.in-addr.arpa
-//	arpaZone, err := transform.ReverseDomainName(zone.Fqdn)
-//	if err == nil {
-//		var resP []ibclient.RecordPTR
-//		objP := ibclient.NewEmptyRecordPTR()
-//		objP.Zone = arpaZone
-//		objP.View = p.view
-//		err = p.client.GetObject(objP, "", searchParams, &resP)
-//		if err != nil && !isNotFoundError(err) {
-//			return nil, fmt.Errorf("could not fetch PTR records from zone '%s': %w", zone.Fqdn, err)
-//		}
-//		for _, res := range resP {
-//			endpoints = append(endpoints, endpoint.NewEndpointWithTTL(res.PtrdName,
-//				endpoint.RecordTypePTR,
-//				endpoint.TTL(int(res.Ttl)),
-//				res.Ipv4Addr,
-//			),
-//			)
-//		}
-//	}
-//}
+func ToPTRResponseMap(res []ibclient.RecordPTR) *ResponseMap {
+	rm := &ResponseMap{
+		Map:	make(map[string]ResponseDetails),
+		RecordType: ibclient.PtrRecord,
+	}
+	for _, record := range res {
+		if _, ok := rm.Map[AsString(record.PtrdName)]; !ok {
+			rm.Map[AsString(record.PtrdName)] = ResponseDetails{{Target: AsString(record.Ipv4Addr), TTL: AsInt64(record.Ttl)}}
+			continue
+		}
+		rm.Map[AsString(record.PtrdName)] = append(rm.Map[AsString(record.PtrdName)], ResponseDetail{Target: AsString(record.Ipv4Addr), TTL: AsInt64(record.Ttl)})
+	}
+	return rm
+}
 
 func (rd ResponseDetails) ToEndpointDetail() (targets []string, ttl endpoint.TTL) {
 	for _, v := range rd {
@@ -136,10 +125,6 @@ func (rd ResponseDetails) ToEndpointDetail() (targets []string, ttl endpoint.TTL
 }
 
 func (rm *ResponseMap) ToEndpoints() []*endpoint.Endpoint {
-	// TODO: PTR provider specific label records
-	//		if p.createPTR {
-	//			newEndpoint.WithProviderSpecific(providerSpecificInfobloxPtrRecord, "true")
-	//		}
 	var endpoints []*endpoint.Endpoint
 	for k, v := range rm.Map {
 		targets, ttl := v.ToEndpointDetail()
@@ -150,33 +135,3 @@ func (rm *ResponseMap) ToEndpoints() []*endpoint.Endpoint {
 	return endpoints
 }
 
-// TODO: update A records that have PTR record created for them already
-//if p.createPTR {
-//	// save all ptr records into map for a quick look up
-//	ptrRecordsMap := make(map[string]bool)
-//	for _, ptrRecord := range endpoints {
-//		if ptrRecord.RecordType != endpoint.RecordTypePTR {
-//			continue
-//		}
-//		ptrRecordsMap[ptrRecord.DNSName] = true
-//	}
-//
-//	for i := range endpoints {
-//		if endpoints[i].RecordType != endpoint.RecordTypeA {
-//			continue
-//		}
-//		// if PTR record already exists for A record, then mark it as such
-//		if ptrRecordsMap[endpoints[i].DNSName] {
-//			found := false
-//			for j := range endpoints[i].ProviderSpecific {
-//				if endpoints[i].ProviderSpecific[j].Name == providerSpecificInfobloxPtrRecord {
-//					endpoints[i].ProviderSpecific[j].Value = "true"
-//					found = true
-//				}
-//			}
-//			if !found {
-//				endpoints[i].WithProviderSpecific(providerSpecificInfobloxPtrRecord, "true")
-//			}
-//		}
-//	}
-//}
