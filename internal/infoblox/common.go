@@ -103,7 +103,7 @@ func ToHostResponseMap(res []ibclient.HostRecord) *ResponseMap {
 
 func ToPTRResponseMap(res []ibclient.RecordPTR) *ResponseMap {
 	rm := &ResponseMap{
-		Map:	make(map[string]ResponseDetails),
+		Map:        make(map[string]ResponseDetails),
 		RecordType: ibclient.PtrRecord,
 	}
 	for _, record := range res {
@@ -134,4 +134,3 @@ func (rm *ResponseMap) ToEndpoints() []*endpoint.Endpoint {
 	}
 	return endpoints
 }
-
