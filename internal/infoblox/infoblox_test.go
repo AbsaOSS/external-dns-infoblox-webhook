@@ -339,12 +339,11 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 					ref != object.(*ibclient.RecordPTR).Ref {
 					continue
 				}
-				if *obj.(*ibclient.RecordPTR).PtrdName != "" &&
-					obj.(*ibclient.RecordPTR).PtrdName != object.(*ibclient.RecordPTR).PtrdName {
+				if AsString(obj.(*ibclient.RecordPTR).PtrdName) != "" &&
+					AsString(obj.(*ibclient.RecordPTR).PtrdName) != AsString(object.(*ibclient.RecordPTR).PtrdName) {
 					continue
 				}
-				// TODO:
-				if !strings.Contains(req.queryParams, fmt.Sprintf("ipv4addr:%s name:%s", AsString(object.(*ibclient.RecordPTR).Ipv4Addr), AsString(object.(*ibclient.RecordPTR).Name))) {
+				if !strings.Contains(req.queryParams, fmt.Sprintf("name:%s", AsString(object.(*ibclient.RecordPTR).Name))) {
 					if !strings.Contains(req.queryParams, fmt.Sprintf("zone:%s", object.(*ibclient.RecordPTR).Zone)) {
 						continue
 					}
@@ -790,7 +789,6 @@ func TestInfobloxAdjustEndpoints(t *testing.T) {
 }
 
 func TestInfobloxRecordsReverse(t *testing.T) {
-	t.Skip()
 	client := mockIBConnector{
 		mockInfobloxZones: &[]ibclient.ZoneAuth{
 			createMockInfobloxZone("10.0.0.0/24"),
@@ -845,7 +843,6 @@ func TestInfobloxApplyChanges(t *testing.T) {
 }
 
 func TestInfobloxApplyChangesReverse(t *testing.T) {
-	t.Skip()
 	client := mockIBConnector{}
 
 	testInfobloxApplyChangesInternal(t, false, true, &client)
