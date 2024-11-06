@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.1.1...v1.2.0) (2024-11-06)
+
+
+### Features
+
+* Implement support for PTR records ([#22](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/22)) ([ca1cbaf](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/ca1cbafb48379eecee06294f050f6f5cd2fec0cc))
+
 ## [1.1.1](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.1.0...v1.1.1) (2024-06-06)
 
 
