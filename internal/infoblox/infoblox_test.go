@@ -192,6 +192,8 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, queryParams *ibclient.QueryParams, res interface{}) (err error) {
 	isPagingType := false
 	switch res.(type) {
+	case *pagingResponseStruct[ibclient.ZoneAuth]:
+		isPagingType = true
 	case *pagingResponseStruct[ibclient.RecordA]:
 		isPagingType = true
 	case *pagingResponseStruct[ibclient.HostRecord]:
@@ -357,7 +359,11 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 			*res.(*[]ibclient.RecordPTR) = result
 		}
 	case "zone_auth":
-		*res.(*[]ibclient.ZoneAuth) = *client.mockInfobloxZones
+		if isPagingType {
+			res.(*pagingResponseStruct[ibclient.ZoneAuth]).Result = *client.mockInfobloxZones
+		} else {
+			*res.(*[]ibclient.ZoneAuth) = *client.mockInfobloxZones
+		}
 	}
 	return
 }
@@ -642,7 +648,10 @@ func TestInfobloxRecords(t *testing.T) {
 		endpoint.NewEndpoint("host.example.com", endpoint.RecordTypeA, "125.1.1.1"),
 	}
 	validateEndpoints(t, actual, expected)
-	client.verifyGetObjectRequest(t, "zone_auth", "", &map[string]string{}).
+	client.verifyGetObjectRequest(t, "zone_auth", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1"}).
 		ExpectNotRequestURLQueryParam(t, "view").
 		ExpectNotRequestURLQueryParam(t, "zone")
 	client.verifyGetObjectRequest(t, "record:a", "", &map[string]string{
@@ -698,7 +707,11 @@ func TestInfobloxRecordsWithView(t *testing.T) {
 		endpoint.NewEndpoint("dog.bar.example.com", endpoint.RecordTypeA, "123.123.123.123"),
 	}
 	validateEndpoints(t, actual, expected)
-	client.verifyGetObjectRequest(t, "zone_auth", "", &map[string]string{"view": "Inside"}).
+	client.verifyGetObjectRequest(t, "zone_auth", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"view":              "Inside"}).
 		ExpectRequestURLQueryParam(t, "view", "Inside").
 		ExpectNotRequestURLQueryParam(t, "zone")
 	client.verifyGetObjectRequest(t, "record:a", "", &map[string]string{

@@ -91,3 +91,4 @@ jobs:
           CI_COMMIT_TIMESTAMP: ${{ github.event.repository.updated_at }}
           CI_COMMIT_SHA: ${{ github.sha }}
           CI_COMMIT_TAG: ${{ needs.release.outputs.tag_name }}
+          REPO_NAME: ${{ github.repository }}
