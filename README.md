@@ -16,19 +16,20 @@ To run the provider, you must provide the following Environment Variables:
 
 **Infoblox Environment Variables**:
 
-| Environment Variable        | Default value | Required |
-|-----------------------------|---------------|----------|
-| INFOBLOX_HOST               | localhost     | true     |
-| INFOBLOX_PORT               | 443           | true     |   
-| INFOBLOX_WAPI_USER          |               | true     |
-| INFOBLOX_WAPI_PASSWORD      |               | true     |
-| INFOBLOX_VERSION            |               | true     |
-| INFOBLOX_SSL_VERIFY         | true          | false    |
-| INFOBLOX_DRY_RUN            | false         | false    |
-| INFOBLOX_VIEW               | default       | false    |
-| INFOBLOX_MAX_RESULTS        | 1500          | false    |
-| INFOBLOX_CREATE_PTR         | false         | false    |
-| INFOBLOX_DEFAULT_TTL        | 300           | false    |
+| Environment Variable                | Default value | Required |
+|-------------------------------------|---------------|----------|
+| INFOBLOX_HOST                       | localhost     | true     |
+| INFOBLOX_PORT                       | 443           | true     |
+| INFOBLOX_WAPI_USER                  |               | true     |
+| INFOBLOX_WAPI_PASSWORD              |               | true     |
+| INFOBLOX_VERSION                    |               | true     |
+| INFOBLOX_SSL_VERIFY                 | true          | false    |
+| INFOBLOX_DRY_RUN                    | false         | false    |
+| INFOBLOX_VIEW                       | default       | false    |
+| INFOBLOX_MAX_RESULTS                | 1500          | false    |
+| INFOBLOX_CREATE_PTR                 | false         | false    |
+| INFOBLOX_DEFAULT_TTL                | 300           | false    |
+| INFOBLOX_EXTENSIBLE_ATTRIBUTES_JSON | {}            | false    |
 
 
 **external-dns-infoblox-webhook Environment Variables**:
