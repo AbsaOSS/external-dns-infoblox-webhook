@@ -806,19 +806,17 @@ func lookupEnvAtoi(key string, fallback int) (i int) {
 
 func deserializeEAs(extAttrJSON string) (map[string]interface{}, error) {
 	extAttrs := make(map[string]interface{})
-	if extAttrJSON != "" {
-		// Check if the input is stringified JSON
-		var intermediate string
-		if err := json.Unmarshal([]byte(extAttrJSON), &intermediate); err == nil {
-			// Input was a stringified JSON, unmarshal it again
-			extAttrJSON = intermediate
-		}
-		if err := json.Unmarshal([]byte(extAttrJSON), &extAttrs); err != nil {
-			return nil, fmt.Errorf("cannot process 'ext_attrs' field: %w", err)
-		}
+	if extAttrJSON == "" {
+		return extAttrs, nil
 	}
-	if extAttrs == nil {
-		extAttrs = make(map[string]interface{})
+	// Check if the input is stringified JSON
+	var intermediate string
+	if err := json.Unmarshal([]byte(extAttrJSON), &intermediate); err == nil {
+		extAttrJSON = intermediate
+	}
+	// Not a stringified JSON, proceed to unmarshal as a normal JSON
+	if err := json.Unmarshal([]byte(extAttrJSON), &extAttrs); err != nil {
+		return nil, fmt.Errorf("cannot process 'ext_attrs' field: %w", err)
 	}
 	return extAttrs, nil
 }
