@@ -809,12 +809,6 @@ func deserializeEAs(extAttrJSON string) (map[string]interface{}, error) {
 	if extAttrJSON == "" {
 		return extAttrs, nil
 	}
-	// Check if the input is stringified JSON
-	var intermediate string
-	if err := json.Unmarshal([]byte(extAttrJSON), &intermediate); err == nil {
-		extAttrJSON = intermediate
-	}
-	// Not a stringified JSON, proceed to unmarshal as a normal JSON
 	if err := json.Unmarshal([]byte(extAttrJSON), &extAttrs); err != nil {
 		return nil, fmt.Errorf("cannot process 'ext_attrs' field: %w", err)
 	}
