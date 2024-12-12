@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.3.0...v1.4.0) (2024-12-12)
+
+
+### Features
+
+* Add support for extensible attributes ([#26](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/26)) ([27b345d](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/27b345d7e7453d3bf9ab2d4b21627770e3ee84b5))
+
+
+### Miscellaneous Chores
+
+* **release:** release 1.3.0 ([#27](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/27)) ([dc845fe](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/dc845fe1af694868f1c7a31629236e3c15a92fa2))
+
 ## [1.3.0](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.2.0...v1.3.0) (2024-12-12)
 
 
