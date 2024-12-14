@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.4.0...v1.4.1) (2024-12-14)
+
+
+### Bug Fixes
+
+* revert repo-name ([#30](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/30)) ([6454728](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/64547289e9505f2cbece2a2c95b7f9aa1a0a25e0))
+
 ## [1.4.0](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.3.0...v1.4.0) (2024-12-12)
 
 
