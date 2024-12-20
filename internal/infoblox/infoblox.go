@@ -667,12 +667,6 @@ func (p *Provider) findReverseZone(zones []*ibclient.ZoneAuth, name string) *ibc
 	return networks[maxMask]
 }
 
-func ReverseIPv4(ip string) string {
-	parsedIP := net.ParseIP(ip).To4() // Parse the IPv4 address
-	reversedIP := net.IPv4(parsedIP[3], parsedIP[2], parsedIP[1], parsedIP[0])
-	return reversedIP.String()
-}
-
 func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet infobloxRecordSet, err error) {
 	var ttl uint32
 	if ep.RecordTTL.IsConfigured() {
@@ -719,12 +713,7 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		obj.Ttl = &ttl
 		obj.UseTtl = &ptrToBoolTrue
 		if getObject {
-			reversedIP := ReverseIPv4(*obj.Ipv4Addr)
-			if err != nil {
-				return
-			}
-
-			queryParams := ibclient.NewQueryParams(false, map[string]string{"name~": reversedIP, "ptrdname": *obj.PtrdName, "ipv4addr": *obj.Ipv4Addr})
+			queryParams := ibclient.NewQueryParams(false, map[string]string{"ptrdname": *obj.PtrdName, "ipv4addr": *obj.Ipv4Addr})
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			if err != nil && !isNotFoundError(err) {
 				return
