@@ -113,9 +113,9 @@ func (mrb *ExtendedRequestBuilder) BuildRequest(t ibclient.RequestType, obj ibcl
 		if zoneAuthQuery && t == ibclient.GET && mrb.fqdnRegEx != "" {
 			query.Set("fqdn~", mrb.fqdnRegEx)
 		}
-
 		// if we are not doing a ZoneAuth query, support the name filter
-		if !zoneAuthQuery && mrb.nameRegEx != "" {
+		_, ok := obj.(*ibclient.RecordPTR)
+		if !ok && !zoneAuthQuery && mrb.nameRegEx != "" {
 			query.Set("name~", mrb.nameRegEx)
 		}
 
@@ -248,7 +248,7 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 				objP.View = p.config.View
 				objP.Ea = extAttrs
 				objP.Zone = arpaZone
-				err = PagingGetObject(p.client, objP, "", map[string]string{"zone": arpaZone, "view": p.config.View}, &resP)
+				err = PagingGetObject(p.client, objP, "", map[string]string{"zone": arpaZone, "view": p.config.View, "ptrdname~": p.config.FQDNRegEx}, &resP)
 				if err != nil && !isNotFoundError(err) {
 					return nil, fmt.Errorf("could not fetch PTR records from zone '%s': %w", zone.Fqdn, err)
 				}
@@ -363,7 +363,7 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 	}
 
 	changesByZone := p.ChangesByZone(zonePointerConverter(zones), changes)
-	for _, changes := range changesByZone {
+	for zone, changes := range changesByZone {
 		for _, change := range changes {
 			record, err := p.buildRecord(change)
 			if err != nil {
@@ -374,6 +374,7 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 				return err
 			}
 			logFields["action"] = change.Action
+			logFields["zone"] = zone
 			if p.config.DryRun {
 				log.WithFields(logFields).Info("Dry run: skipping..")
 				continue
@@ -666,6 +667,12 @@ func (p *Provider) findReverseZone(zones []*ibclient.ZoneAuth, name string) *ibc
 	return networks[maxMask]
 }
 
+func ReverseIPv4(ip string) string {
+	parsedIP := net.ParseIP(ip).To4() // Parse the IPv4 address
+	reversedIP := net.IPv4(parsedIP[3], parsedIP[2], parsedIP[1], parsedIP[0])
+	return reversedIP.String()
+}
+
 func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet infobloxRecordSet, err error) {
 	var ttl uint32
 	if ep.RecordTTL.IsConfigured() {
@@ -712,7 +719,12 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		obj.Ttl = &ttl
 		obj.UseTtl = &ptrToBoolTrue
 		if getObject {
-			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.PtrdName})
+			reversedIP := ReverseIPv4(*obj.Ipv4Addr)
+			if err != nil {
+				return
+			}
+
+			queryParams := ibclient.NewQueryParams(false, map[string]string{"name~": reversedIP, "ptrdname": *obj.PtrdName, "ipv4addr": *obj.Ipv4Addr})
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			if err != nil && !isNotFoundError(err) {
 				return
