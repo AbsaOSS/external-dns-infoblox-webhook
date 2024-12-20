@@ -248,7 +248,7 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 				objP.View = p.config.View
 				objP.Ea = extAttrs
 				objP.Zone = arpaZone
-				err = PagingGetObject(p.client, objP, "", map[string]string{"zone": arpaZone, "view": p.config.View, "ptrdname~": p.config.FQDNRegEx}, &resP)
+				err = PagingGetObject(p.client, objP, "", map[string]string{"zone": arpaZone, "view": p.config.View}, &resP)
 				if err != nil && !isNotFoundError(err) {
 					return nil, fmt.Errorf("could not fetch PTR records from zone '%s': %w", zone.Fqdn, err)
 				}
