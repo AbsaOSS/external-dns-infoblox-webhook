@@ -31,6 +31,13 @@ To run the provider, you must provide the following Environment Variables:
 | INFOBLOX_DEFAULT_TTL                | 300           | false    |
 | INFOBLOX_EXTENSIBLE_ATTRIBUTES_JSON | {}            | false    |
 
+### INFOBLOX_CREATE_PTR
+
+When infoblox `INFOBLOX_CREATE_PTR` is set to `true`, make shure that `DOMAIN_FILTER` contains the zone for reversed lookup.
+
+```bash
+DOMAIN_FILTER="cloud.example, 1.2.3.0/24"
+```
 
 **external-dns-infoblox-webhook Environment Variables**:
 
