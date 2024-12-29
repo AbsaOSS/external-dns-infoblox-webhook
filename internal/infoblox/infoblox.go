@@ -115,7 +115,8 @@ func (mrb *ExtendedRequestBuilder) BuildRequest(t ibclient.RequestType, obj ibcl
 		}
 
 		// if we are not doing a ZoneAuth query, support the name filter
-		if !zoneAuthQuery && mrb.nameRegEx != "" {
+		_, isPTR := obj.(*ibclient.RecordPTR)
+		if !isPTR && !zoneAuthQuery && mrb.nameRegEx != "" {
 			query.Set("name~", mrb.nameRegEx)
 		}
 
@@ -363,7 +364,7 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 	}
 
 	changesByZone := p.ChangesByZone(zonePointerConverter(zones), changes)
-	for _, changes := range changesByZone {
+	for zone, changes := range changesByZone {
 		for _, change := range changes {
 			record, err := p.buildRecord(change)
 			if err != nil {
@@ -374,6 +375,7 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 				return err
 			}
 			logFields["action"] = change.Action
+			logFields["zone"] = zone
 			if p.config.DryRun {
 				log.WithFields(logFields).Info("Dry run: skipping..")
 				continue
@@ -712,7 +714,7 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		obj.Ttl = &ttl
 		obj.UseTtl = &ptrToBoolTrue
 		if getObject {
-			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.PtrdName})
+			queryParams := ibclient.NewQueryParams(false, map[string]string{"ptrdname": *obj.PtrdName, "ipv4addr": *obj.Ipv4Addr})
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			if err != nil && !isNotFoundError(err) {
 				return
