@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.2](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.4.1...v1.4.2) (2024-12-29)
+
+
+### Bug Fixes
+
+* ptr search query ([#32](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/32)) ([bbcb30d](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/bbcb30d70b902506d15f3dc42b1f7daa3eb02739))
+
 ## [1.4.1](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.4.0...v1.4.1) (2024-12-14)
 
 
