@@ -175,6 +175,7 @@ func (p *Webhook) ApplyChanges(w http.ResponseWriter, r *http.Request) {
 	if err := p.provider.ApplyChanges(ctx, &changes); err != nil {
 		w.Header().Set(contentTypeHeader, contentTypePlaintext)
 		w.WriteHeader(http.StatusInternalServerError)
+		log.Error(err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
