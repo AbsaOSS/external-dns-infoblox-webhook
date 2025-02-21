@@ -369,8 +369,12 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 }
 
 func (client *mockIBConnector) DeleteObject(ref string) (refRes string, err error) {
-	re := regexp.MustCompile(`([^/]+)/[^:]+:([^/]+)/default`)
+	re := regexp.MustCompile(`^([^/]+)/[^:]+:([^/]+)/default$`)
 	result := re.FindStringSubmatch(ref)
+
+	if len(result) < 3 {
+		return "", fmt.Errorf("invalid reference format: %s", ref)
+	}
 
 	switch result[1] {
 	case "record:a":
