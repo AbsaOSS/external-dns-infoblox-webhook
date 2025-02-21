@@ -371,8 +371,8 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 				return fmt.Errorf("could not build record: %w", err)
 			}
 			refId, logFields, err := getRefID(record)
-			if err != nil {
-				return err
+			if change.Action != infobloxCreate && err != nil {
+				return fmt.Errorf("could not get refId (%s): %w", change, err)
 			}
 			logFields["action"] = change.Action
 			logFields["zone"] = zone

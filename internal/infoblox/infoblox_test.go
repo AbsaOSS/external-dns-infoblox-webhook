@@ -334,15 +334,16 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 		var result []ibclient.RecordPTR
 		for _, object := range *client.mockInfobloxObjects {
 			if object.ObjectType() == "record:ptr" {
-				if ref == object.(*ibclient.RecordPTR).Ref {
-					result = append(result, *object.(*ibclient.RecordPTR))
-				}
 				if ref != "" &&
 					ref != object.(*ibclient.RecordPTR).Ref {
 					continue
 				}
 				if AsString(obj.(*ibclient.RecordPTR).PtrdName) != "" &&
 					AsString(obj.(*ibclient.RecordPTR).PtrdName) != AsString(object.(*ibclient.RecordPTR).PtrdName) {
+					continue
+				}
+				if AsString(obj.(*ibclient.RecordPTR).Ipv4Addr) != "" &&
+					AsString(obj.(*ibclient.RecordPTR).Ipv4Addr) != AsString(object.(*ibclient.RecordPTR).Ipv4Addr) {
 					continue
 				}
 				if !strings.Contains(req.queryParams, fmt.Sprintf("name:%s", AsString(object.(*ibclient.RecordPTR).Name))) {
@@ -369,8 +370,12 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 }
 
 func (client *mockIBConnector) DeleteObject(ref string) (refRes string, err error) {
-	re := regexp.MustCompile(`([^/]+)/[^:]+:([^/]+)/default`)
+	re := regexp.MustCompile(`^([^/]+)/[^:]+:([^/]+)/default$`)
 	result := re.FindStringSubmatch(ref)
+
+	if len(result) < 3 {
+		return "", fmt.Errorf("invalid reference format: %s", ref)
+	}
 
 	switch result[1] {
 	case "record:a":
@@ -384,7 +389,7 @@ func (client *mockIBConnector) DeleteObject(ref string) (refRes string, err erro
 				endpoint.NewEndpoint(
 					*record.Name,
 					endpoint.RecordTypeA,
-					"",
+					*record.Ipv4Addr,
 				),
 			)
 		}
@@ -444,7 +449,7 @@ func (client *mockIBConnector) DeleteObject(ref string) (refRes string, err erro
 				endpoint.NewEndpoint(
 					*record.PtrdName,
 					endpoint.RecordTypePTR,
-					"",
+					*record.Ipv4Addr,
 				),
 			)
 		}
@@ -850,6 +855,70 @@ func TestInfobloxApplyChanges(t *testing.T) {
 		endpoint.NewEndpoint("oldcname.example.com", endpoint.RecordTypeCNAME, ""),
 		endpoint.NewEndpoint("deleted.example.com", endpoint.RecordTypeA, ""),
 		endpoint.NewEndpoint("deletedcname.example.com", endpoint.RecordTypeCNAME, ""),
+	})
+
+	validateEndpoints(t, client.updatedEndpoints, []*endpoint.Endpoint{})
+}
+
+// TestInfobloxApplyChangesPoluted tests the behavior of the Infoblox provider
+// when handling changes to DNS records, specifically in cases where PTR records
+// are either missing or stale from previous runs.
+//
+// Test Cases:
+// 1. ptrexists.example.com:
+//   - A previous run left a stale PTR record pointing to an outdated IP address.
+//   - The test expects that:
+//   - A new A record is created with the correct IP address.
+//   - A corresponding new PTR record is created.
+//   - The old stale PTR record is removed.
+//
+// 2. ptrmissing.example.com:
+//   - For unknown reasons, a PTR record is missing from Infoblox.
+//   - The test expects that:
+//   - A new PTR record is created to restore consistency.
+func TestInfobloxApplyChangesPoluted(t *testing.T) {
+	client := mockIBConnector{
+		mockInfobloxZones: &[]ibclient.ZoneAuth{
+			createMockInfobloxZone("example.com"),
+			createMockInfobloxZone("1.2.3.0/24"),
+		},
+		mockInfobloxObjects: &[]ibclient.IBObject{
+			createMockInfobloxObjectWithZone("ptrexists.example.com", endpoint.RecordTypePTR, "1.2.3.11", "example.com"),
+			createMockInfobloxObjectWithZone("ptrmissing.example.com", endpoint.RecordTypeA, "1.2.3.9", "example.com"),
+		},
+	}
+
+	providerCfg := newInfobloxProvider(endpoint.NewDomainFilter([]string{""}), provider.NewZoneIDFilter([]string{""}), "", false, true, &client)
+
+	changes := &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("ptrexists.example.com", endpoint.RecordTypeA, "1.2.3.10"),
+		},
+		UpdateOld: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypeA, "1.2.3.9"),
+		},
+		UpdateNew: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypeA, "1.2.3.8"),
+		},
+		Delete: []*endpoint.Endpoint{},
+	}
+
+	if err := providerCfg.ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatal(err)
+	}
+
+	validateEndpoints(t, client.createdEndpoints, []*endpoint.Endpoint{
+		endpoint.NewEndpoint("ptrexists.example.com", endpoint.RecordTypeA, "1.2.3.10"),
+		endpoint.NewEndpoint("ptrexists.example.com", endpoint.RecordTypePTR, "1.2.3.10"),
+		endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypeA, "1.2.3.8"),
+		endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypePTR, "1.2.3.8"),
+		endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypePTR, "1.2.3.9"), // this should be created
+	})
+
+	validateEndpoints(t, client.deletedEndpoints, []*endpoint.Endpoint{
+		endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypeA, "1.2.3.9"),
+		endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypePTR, "1.2.3.9"),
+		endpoint.NewEndpoint("ptrexists.example.com", endpoint.RecordTypePTR, "1.2.3.11"), // this should be deleted
 	})
 
 	validateEndpoints(t, client.updatedEndpoints, []*endpoint.Endpoint{})
