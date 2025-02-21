@@ -363,44 +363,51 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 		return fmt.Errorf("could not fetch zones: %w", err)
 	}
 
+	var errs []error
 	changesByZone := p.ChangesByZone(zonePointerConverter(zones), changes)
 	for zone, changes := range changesByZone {
 		for _, change := range changes {
 			record, err := p.buildRecord(change)
 			if err != nil {
-				return fmt.Errorf("could not build record: %w", err)
+				errs = append(errs, fmt.Errorf("could not build record (%s): %w", change, err))
+				continue
 			}
+
 			refId, logFields, err := getRefID(record)
-			if err != nil {
-				return err
+			if change.Action != infobloxCreate && err != nil {
+				errs = append(errs, err)
+				continue
 			}
+
 			logFields["action"] = change.Action
 			logFields["zone"] = zone
 			if p.config.DryRun {
 				log.WithFields(logFields).Info("Dry run: skipping..")
 				continue
 			}
+
 			log.WithFields(logFields).Info("Changing record")
+			var actionErr error
+
 			switch change.Action {
 			case infobloxCreate:
-				_, err = p.client.CreateObject(record.obj)
-				if err != nil {
-					return err
-				}
+				_, actionErr = p.client.CreateObject(record.obj)
 			case infobloxDelete:
-				_, err = p.client.DeleteObject(refId)
-				if err != nil {
-					return err
-				}
+				_, actionErr = p.client.DeleteObject(refId)
 			case infobloxUpdate:
-				_, err = p.client.UpdateObject(record.obj, refId)
-				if err != nil {
-					return err
-				}
+				_, actionErr = p.client.UpdateObject(record.obj, refId)
 			default:
-				return fmt.Errorf("unknown action '%s'", change.Action)
+				actionErr = fmt.Errorf("unknown action '%s'", change.Action)
+			}
+
+			if actionErr != nil {
+				errs = append(errs, actionErr)
 			}
 		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("encountered errors: %v", errs)
 	}
 
 	return nil
