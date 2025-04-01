@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.3](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.4.2...v1.4.3) (2025-04-01)
+
+
+### Bug Fixes
+
+* continue on buildRecord error ([9f376ad](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/9f376ade7346f8c5d1fa508cbdc1117f3b1e673c))
+* show errors in webhook ([323c425](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/323c4257a19a4035c9b6c8daf45102bb7eb9383a))
+
 ## [1.4.2](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.4.1...v1.4.2) (2024-12-29)
 
 
