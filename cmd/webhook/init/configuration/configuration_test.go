@@ -30,7 +30,7 @@ func TestInit(t *testing.T) {
 
 	cfg := Init()
 
-	assert.Equal(t, "0.0.0.0", cfg.ServerHost)
+	assert.Equal(t, "127.0.0.1", cfg.ServerHost)
 	assert.Equal(t, 8888, cfg.ServerPort)
 	assert.Equal(t, []string(nil), cfg.DomainFilter)
 	assert.Equal(t, []string(nil), cfg.ExcludeDomains)

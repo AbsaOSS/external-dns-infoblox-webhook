@@ -4,7 +4,6 @@ go 1.22.2
 
 require (
 	github.com/caarlos0/env/v11 v11.0.0
-	github.com/go-chi/chi/v5 v5.0.12
 	github.com/infobloxopen/infoblox-go-client/v2 v2.6.0
 	github.com/miekg/dns v1.1.59
 	github.com/sirupsen/logrus v1.9.3

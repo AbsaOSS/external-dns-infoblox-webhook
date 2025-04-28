@@ -26,7 +26,6 @@ import (
 	"github.com/AbsaOSS/external-dns-infoblox-webhook/cmd/webhook/init/dnsprovider"
 	"github.com/AbsaOSS/external-dns-infoblox-webhook/cmd/webhook/init/logging"
 	"github.com/AbsaOSS/external-dns-infoblox-webhook/cmd/webhook/init/server"
-	"github.com/AbsaOSS/external-dns-infoblox-webhook/pkg/webhook"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -59,6 +58,8 @@ func main() {
 		log.Fatalf("failed to initialize provider: %v", err)
 	}
 
-	srv := server.Init(config, webhook.New(provider))
-	server.ShutdownGracefully(srv)
+	srv := server.NewServer()
+
+	srv.StartHealth(config)
+	srv.Start(config, provider)
 }
