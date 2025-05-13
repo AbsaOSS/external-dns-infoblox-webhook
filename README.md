@@ -43,8 +43,9 @@ DOMAIN_FILTER="cloud.example, 1.2.3.0/24"
 
 | Environment Variable           | Default value | Required |
 |--------------------------------|---------------|----------|
-| SERVER_HOST                    | 0.0.0.0       | true     |
+| SERVER_HOST                    | 127.0.0.1     | true     |
 | SERVER_PORT                    | 8888          | true     |   
+| HEALTH_CHECK_PORT              | 8080          | false    |
 | SERVER_READ_TIMEOUT            |               | false    |
 | SERVER_WRITE_TIMEOUT           |               | false    |
 | DOMAIN_FILTER                  |               | false    |
