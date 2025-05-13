@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.4](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.4.3...v1.4.4) (2025-05-13)
+
+
+### Bug Fixes
+
+* Update README with new defaults ([a05beef](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/a05beefdfff9fb76b551680cf57e35f437ff248f))
+
 ## [1.4.3](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.4.2...v1.4.3) (2025-04-01)
 
 
