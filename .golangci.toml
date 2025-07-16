@@ -1,12 +1,32 @@
-[run]
-timeout = "120s"
-
-[output]
-format = "colored-line-number"
+version = '2'
 
 [linters]
 enable = [
-    "gocyclo", "unconvert", "goimports","vetshadow", "misspell", "ineffassign","goconst", "vet", "unparam", "gofmt"]
+  'goconst',
+  'gocyclo',
+  'misspell',
+  'unconvert',
+  'unparam'
+]
 
-[issues]
-exclude-use-default = false
+[linters.exclusions]
+generated = 'lax'
+paths = [
+  'third_party$',
+  'builtin$',
+  'examples$'
+]
+
+[formatters]
+enable = [
+  'gofmt',
+  'goimports'
+]
+
+[formatters.exclusions]
+generated = 'lax'
+paths = [
+  'third_party$',
+  'builtin$',
+  'examples$'
+]
