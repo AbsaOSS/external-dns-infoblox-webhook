@@ -792,7 +792,7 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 }
 
 func (p *Provider) buildRecord(change *infobloxChange) (*infobloxRecordSet, error) {
-	rs, err := p.recordSet(change.Endpoint, !(change.Action == infobloxCreate))
+	rs, err := p.recordSet(change.Endpoint, !(change.Action == infobloxCreate)) //nolint: staticcheck
 	if err != nil {
 		return nil, err
 	}
