@@ -241,6 +241,17 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 		endpointsTXT := ToTXTResponseMap(resT).ToEndpoints()
 		endpoints = append(endpoints, endpointsTXT...)
 
+		var resNS []ibclient.RecordNS
+		objNS := ibclient.NewEmptyRecordNS()
+		objNS.View = p.config.View
+		objNS.Zone = zone.Fqdn
+		err = PagingGetObject(p.client, objNS, "", searchParams, &resNS)
+		if err != nil && !isNotFoundError(err) {
+			return nil, fmt.Errorf("could not fetch NS records from zone '%s': %w", zone.Fqdn, err)
+		}
+		endpointsNS := ToNSResponseMap(resNS).ToEndpoints()
+		endpoints = append(endpoints, endpointsNS...)
+
 		if p.config.CreatePTR {
 			arpaZone, err := rfc2317.CidrToInAddr(zone.Fqdn)
 			if err == nil {
@@ -448,6 +459,13 @@ func getRefID(record *infobloxRecordSet) (string, log.Fields, error) {
 		l["ttl"] = AsInt64(record.obj.(*ibclient.RecordPTR).Ttl)
 		l["target"] = AsString(record.obj.(*ibclient.RecordPTR).PtrdName)
 		for _, r := range *record.res.(*[]ibclient.RecordPTR) {
+			return r.Ref, l, nil
+		}
+		return "", l, nil
+	case "RecordNS":
+		l["record"] = record.obj.(*ibclient.RecordNS).Name
+		l["target"] = AsString(record.obj.(*ibclient.RecordNS).Nameserver)
+		for _, r := range *record.res.(*[]ibclient.RecordNS) {
 			return r.Ref, l, nil
 		}
 		return "", l, nil
@@ -753,6 +771,26 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 			// If getObject is not set (action == create), we need to set the View for Infoblox to find the parent zone
 			// If View is set for the other actions, Infoblox will complain that the view field is not allowed
 			obj.View = &p.config.View
+		}
+		recordSet = infobloxRecordSet{
+			obj: obj,
+			res: &res,
+		}
+	case endpoint.RecordTypeNS:
+		var res []ibclient.RecordNS
+		obj := ibclient.NewEmptyRecordNS()
+		obj.Name = ep.DNSName
+		obj.Nameserver = &ep.Targets[0]
+		if getObject {
+			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": obj.Name})
+			err = p.client.GetObject(obj, "", queryParams, &res)
+			if err != nil && !isNotFoundError(err) {
+				return
+			}
+		} else {
+			// If getObject is not set (action == create), we need to set the View for Infoblox to find the parent zone
+			// If View is set for the other actions, Infoblox will complain that the view field is not allowed
+			obj.View = p.config.View
 		}
 		recordSet = infobloxRecordSet{
 			obj: obj,
