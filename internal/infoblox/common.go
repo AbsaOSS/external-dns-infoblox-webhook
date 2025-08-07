@@ -67,6 +67,21 @@ func ToCNAMEResponseMap(res []ibclient.RecordCNAME) *ResponseMap {
 	return rm
 }
 
+func ToNSResponseMap(res []ibclient.RecordNS) *ResponseMap {
+	rm := &ResponseMap{
+		Map:        make(map[string]ResponseDetails),
+		RecordType: ibclient.ZoneDelegatedConst,
+	}
+	for _, record := range res {
+		if _, ok := rm.Map[record.Name]; !ok {
+			rm.Map[record.Name] = ResponseDetails{{Target: AsString(record.Nameserver)}}
+			continue
+		}
+		rm.Map[record.Name] = append(rm.Map[record.Name], ResponseDetail{Target: AsString(record.Nameserver)})
+	}
+	return rm
+}
+
 func ToTXTResponseMap(res []ibclient.RecordTXT) *ResponseMap {
 	rm := &ResponseMap{
 		Map:        make(map[string]ResponseDetails),
