@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.4.4...v1.5.0) (2025-08-21)
+
+
+### Features
+
+* add NS record support ([#49](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/49)) ([f15d8b4](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/f15d8b403f9b0fea14750718aba8975016898f51))
+
 ## [1.4.4](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.4.3...v1.4.4) (2025-05-13)
 
 
