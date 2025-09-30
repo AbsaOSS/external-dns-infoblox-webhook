@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/AbsaOSS/external-dns-infoblox-webhook/internal/metrics"
 	ibclient "github.com/infobloxopen/infoblox-go-client/v2"
 )
 
@@ -50,6 +51,7 @@ func PagingGetObject[T any](
 
 	err = c.GetObject(obj, "", ibclient.NewQueryParams(false, queryParamsCopy), &pagingResponse)
 	if err != nil {
+		metrics.FailedApiCallsTotal.Inc()
 		return fmt.Errorf("could not fetch object: %s", err)
 	} else {
 		*res = append(*res, pagingResponse.Result...)
@@ -63,6 +65,7 @@ func PagingGetObject[T any](
 		pagingResponse.NextPageId = ""
 		pagingResponse.Result = make([]T, 0)
 		err = c.GetObject(obj, "", ibclient.NewQueryParams(false, queryParamsCopy), &pagingResponse)
+		metrics.TotalApiCalls.Inc()
 		if err != nil {
 			return fmt.Errorf("could not fetch object: %s", err)
 		}
