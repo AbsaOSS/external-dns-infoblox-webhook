@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.5.0...v1.6.0) (2025-09-30)
+
+
+### Features
+
+* Add metrics for infoblox API calls ([a533e11](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/a533e112c3148f351fdc522af8ddf3296749a3d6))
+
 ## [1.5.0](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.4.4...v1.5.0) (2025-08-21)
 
 
