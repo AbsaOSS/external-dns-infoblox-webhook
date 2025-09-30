@@ -28,7 +28,9 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/AbsaOSS/external-dns-infoblox-webhook/internal/metrics"
 	ibclient "github.com/infobloxopen/infoblox-go-client/v2"
 	log "github.com/sirupsen/logrus"
 
@@ -199,6 +201,7 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 		objA.Zone = zone.Fqdn
 		err = PagingGetObject(p.client, objA, "", searchParams, &resA)
 		if err != nil && !isNotFoundError(err) {
+			metrics.FailedApiCallsTotal.Inc()
 			return nil, fmt.Errorf("could not fetch A records from zone '%s': %w", zone.Fqdn, err)
 		}
 		endpointsA := ToAResponseMap(resA).ToEndpoints()
@@ -212,6 +215,7 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 		objH.Zone = zone.Fqdn
 		err = PagingGetObject(p.client, objH, "", searchParams, &resH)
 		if err != nil && !isNotFoundError(err) {
+			metrics.FailedApiCallsTotal.Inc()
 			return nil, fmt.Errorf("could not fetch host records from zone '%s': %w", zone.Fqdn, err)
 		}
 		endpointsHost := ToHostResponseMap(resH).ToEndpoints()
@@ -224,6 +228,7 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 		objC.Zone = zone.Fqdn
 		err = PagingGetObject(p.client, objC, "", searchParams, &resC)
 		if err != nil && !isNotFoundError(err) {
+			metrics.FailedApiCallsTotal.Inc()
 			return nil, fmt.Errorf("could not fetch CNAME records from zone '%s': %w", zone.Fqdn, err)
 		}
 		endpointsCNAME := ToCNAMEResponseMap(resC).ToEndpoints()
@@ -236,6 +241,7 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 		objT.Zone = zone.Fqdn
 		err = PagingGetObject(p.client, objT, "", searchParams, &resT)
 		if err != nil && !isNotFoundError(err) {
+			metrics.FailedApiCallsTotal.Inc()
 			return nil, fmt.Errorf("could not fetch TXT records from zone '%s': %w", zone.Fqdn, err)
 		}
 		endpointsTXT := ToTXTResponseMap(resT).ToEndpoints()
@@ -247,6 +253,7 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 		objNS.Zone = zone.Fqdn
 		err = PagingGetObject(p.client, objNS, "", searchParams, &resNS)
 		if err != nil && !isNotFoundError(err) {
+			metrics.FailedApiCallsTotal.Inc()
 			return nil, fmt.Errorf("could not fetch NS records from zone '%s': %w", zone.Fqdn, err)
 		}
 		endpointsNS := ToNSResponseMap(resNS).ToEndpoints()
@@ -262,6 +269,7 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 				objP.Zone = arpaZone
 				err = PagingGetObject(p.client, objP, "", map[string]string{"zone": arpaZone, "view": p.config.View}, &resP)
 				if err != nil && !isNotFoundError(err) {
+					metrics.FailedApiCallsTotal.Inc()
 					return nil, fmt.Errorf("could not fetch PTR records from zone '%s': %w", zone.Fqdn, err)
 				}
 				endpointsPTR := ToPTRResponseMap(resP).ToEndpoints()
@@ -371,6 +379,7 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 
 	zones, err := p.zones()
 	if err != nil {
+		metrics.FailedApiCallsTotal.Inc()
 		return fmt.Errorf("could not fetch zones: %w", err)
 	}
 
@@ -399,14 +408,24 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 
 			log.WithFields(logFields).Info("Changing record")
 			var actionErr error
+			startTime := time.Now()
 
 			switch change.Action {
 			case infobloxCreate:
 				_, actionErr = p.client.CreateObject(record.obj)
+				duration := time.Since(startTime)
+				metrics.ApiCallLatency.WithLabelValues("GetObject").Observe(duration.Seconds())
+				metrics.TotalApiCalls.Inc()
 			case infobloxDelete:
 				_, actionErr = p.client.DeleteObject(refId)
+				duration := time.Since(startTime)
+				metrics.ApiCallLatency.WithLabelValues("DeleteObject").Observe(duration.Seconds())
+				metrics.TotalApiCalls.Inc()
 			case infobloxUpdate:
 				_, actionErr = p.client.UpdateObject(record.obj, refId)
+				duration := time.Since(startTime)
+				metrics.ApiCallLatency.WithLabelValues("UpdateObject").Observe(duration.Seconds())
+				metrics.TotalApiCalls.Inc()
 			default:
 				actionErr = fmt.Errorf("unknown action '%s'", change.Action)
 			}
@@ -600,6 +619,7 @@ func (p *Provider) zones() ([]ibclient.ZoneAuth, error) {
 	}
 	err := PagingGetObject(p.client, obj, "", searchFields, &res)
 	if err != nil && !isNotFoundError(err) {
+		metrics.FailedApiCallsTotal.Inc()
 		return nil, err
 	}
 
@@ -695,6 +715,7 @@ func (p *Provider) findReverseZone(zones []*ibclient.ZoneAuth, name string) *ibc
 
 func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet infobloxRecordSet, err error) {
 	var ttl uint32
+	var startTime time.Time
 	if ep.RecordTTL.IsConfigured() {
 		ttl = uint32(ep.RecordTTL)
 	}
@@ -702,6 +723,7 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 	if err != nil {
 		return
 	}
+	startTime = time.Now()
 	ptrToBoolTrue := true
 	switch ep.RecordType {
 	case endpoint.RecordTypeA:
@@ -716,10 +738,14 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		if getObject {
 			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.Name, "ipv4addr": *obj.Ipv4Addr})
 			err = p.client.GetObject(obj, "", queryParams, &res)
+			duration := time.Since(startTime)
+			metrics.TotalApiCalls.Inc()
 			if err != nil && !isNotFoundError(err) {
+				metrics.FailedApiCallsTotal.Inc()
 				err = fmt.Errorf("could not fetch A record ['%s':'%s'] : %w", *obj.Name, *obj.Ipv4Addr, err)
 				return
 			}
+			metrics.ApiCallLatency.WithLabelValues("GetObjectA").Observe(duration.Seconds())
 		} else {
 			// If getObject is not set (action == create), we need to set the View for Infoblox to find the parent zone
 			// If View is set for the other actions, Infoblox will complain that the view field is not allowed
@@ -741,9 +767,14 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		if getObject {
 			queryParams := ibclient.NewQueryParams(false, map[string]string{"ptrdname": *obj.PtrdName, "ipv4addr": *obj.Ipv4Addr})
 			err = p.client.GetObject(obj, "", queryParams, &res)
+			duration := time.Since(startTime)
+			metrics.TotalApiCalls.Inc()
 			if err != nil && !isNotFoundError(err) {
+				metrics.FailedApiCallsTotal.Inc()
 				return
 			}
+			metrics.ApiCallLatency.WithLabelValues("GetObjectPTR").Observe(duration.Seconds())
+
 		} else {
 			// If getObject is not set (action == create), we need to set the View for Infoblox to find the parent zone
 			// If View is set for the other actions, Infoblox will complain that the view field is not allowed
@@ -764,9 +795,13 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		if getObject {
 			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.Name})
 			err = p.client.GetObject(obj, "", queryParams, &res)
+			duration := time.Since(startTime)
+			metrics.TotalApiCalls.Inc()
 			if err != nil && !isNotFoundError(err) {
+				metrics.FailedApiCallsTotal.Inc()
 				return
 			}
+			metrics.ApiCallLatency.WithLabelValues("GetObjectCNAME").Observe(duration.Seconds())
 		} else {
 			// If getObject is not set (action == create), we need to set the View for Infoblox to find the parent zone
 			// If View is set for the other actions, Infoblox will complain that the view field is not allowed
@@ -784,9 +819,13 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		if getObject {
 			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": obj.Name})
 			err = p.client.GetObject(obj, "", queryParams, &res)
+			duration := time.Since(startTime)
+			metrics.TotalApiCalls.Inc()
 			if err != nil && !isNotFoundError(err) {
+				metrics.FailedApiCallsTotal.Inc()
 				return
 			}
+			metrics.ApiCallLatency.WithLabelValues("GetObjectNS").Observe(duration.Seconds())
 		} else {
 			// If getObject is not set (action == create), we need to set the View for Infoblox to find the parent zone
 			// If View is set for the other actions, Infoblox will complain that the view field is not allowed
@@ -813,9 +852,13 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		if getObject {
 			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.Name})
 			err = p.client.GetObject(obj, "", queryParams, &res)
+			duration := time.Since(startTime)
+			metrics.TotalApiCalls.Inc()
 			if err != nil && !isNotFoundError(err) {
+				metrics.FailedApiCallsTotal.Inc()
 				return
 			}
+			metrics.ApiCallLatency.WithLabelValues("GetObjectTXT").Observe(duration.Seconds())
 		} else {
 			// If getObject is not set (action == create), we need to set the View for Infoblox to find the parent zone
 			// If View is set for the other actions, Infoblox will complain that the view field is not allowed

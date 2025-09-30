@@ -25,6 +25,7 @@ import (
 	"net/http"
 
 	"github.com/AbsaOSS/external-dns-infoblox-webhook/cmd/webhook/init/configuration"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"sigs.k8s.io/external-dns/provider"
 	"sigs.k8s.io/external-dns/provider/webhook/api"
 )
@@ -55,6 +56,7 @@ func (wh *WebhookServer) StartHealth(config configuration.Config) {
 	go func() {
 		listenAddr := fmt.Sprintf("0.0.0.0:%d", config.HealthCheckPort)
 		m := http.NewServeMux()
+		m.Handle("/metrics", promhttp.Handler())
 		m.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-wh.Channel:
