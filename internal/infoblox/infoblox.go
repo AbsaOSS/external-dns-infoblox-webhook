@@ -73,6 +73,7 @@ type StartupConfig struct {
 	MaxResults   int    `env:"INFOBLOX_MAX_RESULTS" envDefault:"1500"`
 	CreatePTR    bool   `env:"INFOBLOX_CREATE_PTR" envDefault:"false"`
 	DefaultTTL   int    `env:"INFOBLOX_DEFAULT_TTL" envDefault:"300"`
+	UseTTL       bool   `env:"INFOBLOX_USE_TTL" envDefault:"true"`
 	ExtAttrsJSON string `env:"INFOBLOX_EXTENSIBLE_ATTRIBUTES_JSON" envDefault:"{}"`
 	FQDNRegEx    string
 	NameRegEx    string
@@ -724,7 +725,6 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		return
 	}
 	startTime = time.Now()
-	ptrToBoolTrue := true
 	switch ep.RecordType {
 	case endpoint.RecordTypeA:
 		var res []ibclient.RecordA
@@ -734,7 +734,7 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		obj.Ipv4Addr = &ep.Targets[0]
 		obj.Ea = extAttrs
 		obj.Ttl = &ttl
-		obj.UseTtl = &ptrToBoolTrue
+		obj.UseTtl = &p.config.UseTTL
 		if getObject {
 			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.Name, "ipv4addr": *obj.Ipv4Addr})
 			err = p.client.GetObject(obj, "", queryParams, &res)
@@ -763,7 +763,7 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		obj.Ipv4Addr = &ep.Targets[0]
 		obj.Ea = extAttrs
 		obj.Ttl = &ttl
-		obj.UseTtl = &ptrToBoolTrue
+		obj.UseTtl = &p.config.UseTTL
 		if getObject {
 			queryParams := ibclient.NewQueryParams(false, map[string]string{"ptrdname": *obj.PtrdName, "ipv4addr": *obj.Ipv4Addr})
 			err = p.client.GetObject(obj, "", queryParams, &res)
@@ -791,7 +791,7 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		obj.Canonical = &ep.Targets[0]
 		obj.Ea = extAttrs
 		obj.Ttl = &ttl
-		obj.UseTtl = &ptrToBoolTrue
+		obj.UseTtl = &p.config.UseTTL
 		if getObject {
 			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.Name})
 			err = p.client.GetObject(obj, "", queryParams, &res)
@@ -847,7 +847,7 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		obj.Name = &ep.DNSName
 		obj.Ea = extAttrs
 		obj.Ttl = &ttl
-		obj.UseTtl = &ptrToBoolTrue
+		obj.UseTtl = &p.config.UseTTL
 		// TODO: Zone?
 		if getObject {
 			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.Name})
