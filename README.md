@@ -29,6 +29,7 @@ To run the provider, you must provide the following Environment Variables:
 | INFOBLOX_MAX_RESULTS                | 1500          | false    |
 | INFOBLOX_CREATE_PTR                 | false         | false    |
 | INFOBLOX_DEFAULT_TTL                | 300           | false    |
+| INFOBLOX_USE_TTL                    | true          | false    |
 | INFOBLOX_EXTENSIBLE_ATTRIBUTES_JSON | {}            | false    |
 
 ### INFOBLOX_CREATE_PTR
