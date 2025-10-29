@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.6.0...v1.7.0) (2025-10-29)
+
+
+### Features
+
+* make use_ttl configurable via INFOBLOX_USE_TTL environment variable ([#56](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/56)) ([f6b8704](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/f6b8704b020f118ddbc901931c900cbad5dda08f))
+
 ## [1.6.0](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.5.0...v1.6.0) (2025-09-30)
 
 
