@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.7.0...v1.7.1) (2026-03-04)
+
+
+### Miscellaneous Chores
+
+* upgrade golangci-lint version ([21be821](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/21be821735ab2e8a7f677914f3d4ed1fc726ba9b))
+
 ## [1.7.0](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.6.0...v1.7.0) (2025-10-29)
 
 
