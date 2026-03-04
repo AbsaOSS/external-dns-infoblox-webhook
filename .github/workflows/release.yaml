@@ -48,11 +48,6 @@ jobs:
     name: Publish Provider
     needs:
       - release
-    strategy:
-      max-parallel: 4
-      matrix:
-        go-version: [1.22.x]
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -62,7 +57,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v5
         with:
-          go-version: "${{ matrix.go-version }}"
+          go-version-file: ./go.mod
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3.5.0
