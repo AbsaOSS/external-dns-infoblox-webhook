@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"reflect"
 	"strings"
@@ -60,9 +61,17 @@ func TestMain(m *testing.M) {
 
 	go func() {
 		srv := NewServer()
-		srv.StartHealth(configuration.Init([]string{}))
-		srv.Start(configuration.Init([]string{}), mockProvider)
-
+		cfg := configuration.Init([]string{})
+		srv.StartHealth(cfg)
+		l, err := net.Listen("tcp", fmt.Sprintf("%s:%d", cfg.ServerHost, cfg.ServerPort))
+		if err != nil {
+			log.Fatal(err)
+		}
+		// Drive serve directly rather than Start so the test binary does not
+		// install a process-wide SIGINT/SIGTERM handler. Start's handler would
+		// never be removed here (this goroutine blocks forever), so it would
+		// swallow the first Ctrl-C sent to abort a test run.
+		srv.serve(context.Background(), func() {}, l, cfg, mockProvider)
 	}()
 
 	time.Sleep(300 * time.Millisecond)
@@ -425,4 +434,230 @@ func (d *MockProvider) AdjustEndpoints(endpoints []*endpoint.Endpoint) ([]*endpo
 
 func (d *MockProvider) GetDomainFilter() endpoint.DomainFilterInterface {
 	return d.testCase.returnDomainFilter
+}
+
+// slowApplyProvider blocks in ApplyChanges until release is closed, so a test
+// can hold a request in flight and observe how a graceful shutdown treats it.
+type slowApplyProvider struct {
+	*MockProvider
+	applyStarted chan struct{} // closed when ApplyChanges is entered
+	release      chan struct{} // ApplyChanges returns once this is closed
+}
+
+func (s *slowApplyProvider) ApplyChanges(_ context.Context, _ *plan.Changes) error {
+	close(s.applyStarted)
+	<-s.release
+	return nil
+}
+
+// TestServeDrainsInFlightRequestOnShutdown verifies that cancelling serve's
+// context (as SIGINT/SIGTERM does) lets an in-flight /records apply run to
+// completion instead of being cut off, and that serve then returns. This is
+// what stops a normal pod termination from aborting an apply mid-pair.
+func TestServeDrainsInFlightRequestOnShutdown(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := l.Addr().String()
+
+	sp := &slowApplyProvider{
+		MockProvider: &MockProvider{},
+		applyStarted: make(chan struct{}),
+		release:      make(chan struct{}),
+	}
+	wh := NewServer()
+	cfg := configuration.Config{ServerShutdownTimeout: 10 * time.Second}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	served := make(chan struct{})
+	go func() {
+		wh.serve(ctx, func() {}, l, cfg, sp)
+		close(served)
+	}()
+
+	<-wh.Channel // wait until the server is listening
+
+	respCh := make(chan int, 1)
+	go func() {
+		resp, err := http.Post("http://"+addr+"/records", "application/json", strings.NewReader("{}"))
+		if err != nil {
+			respCh <- -1
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		respCh <- resp.StatusCode
+	}()
+
+	select {
+	case <-sp.applyStarted: // the apply is now in flight
+	case <-time.After(5 * time.Second):
+		t.Fatal("apply did not start; /records never reached ApplyChanges")
+	}
+	cancel()          // trigger graceful shutdown mid-apply
+	close(sp.release) // let the in-flight apply finish while the drain waits
+
+	select {
+	case code := <-respCh:
+		if code != http.StatusNoContent {
+			t.Fatalf("in-flight apply was not drained cleanly: got status %d, want %d", code, http.StatusNoContent)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("in-flight apply did not complete after graceful shutdown was triggered")
+	}
+
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not return after draining")
+	}
+}
+
+// TestServeClosesImmediatelyWhenDrainDisabled verifies that a non-positive
+// ServerShutdownTimeout disables the drain: on context cancel serve severs the
+// in-flight request and returns immediately instead of draining. A negative
+// value must take the same immediate-close (s.Close) path as 0, not fall through
+// to an already-expired shutdown context, which would return without
+// force-closing, leaving the in-flight request dangling.
+func TestServeClosesImmediatelyWhenDrainDisabled(t *testing.T) {
+	for _, timeout := range []time.Duration{0, -1 * time.Second} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			addr := l.Addr().String()
+
+			sp := &slowApplyProvider{
+				MockProvider: &MockProvider{},
+				applyStarted: make(chan struct{}),
+				release:      make(chan struct{}),
+			}
+			// Release the blocked apply only on cleanup so it stays in flight for
+			// the whole assertion window.
+			defer close(sp.release)
+			wh := NewServer()
+			cfg := configuration.Config{ServerShutdownTimeout: timeout}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			served := make(chan struct{})
+			go func() {
+				wh.serve(ctx, func() {}, l, cfg, sp)
+				close(served)
+			}()
+
+			<-wh.Channel // wait until the server is listening
+
+			respCh := make(chan int, 1)
+			go func() {
+				resp, err := http.Post("http://"+addr+"/records", "application/json", strings.NewReader("{}"))
+				if err != nil {
+					respCh <- -1 // connection severed by the server
+					return
+				}
+				defer func() { _ = resp.Body.Close() }()
+				respCh <- resp.StatusCode
+			}()
+
+			select {
+			case <-sp.applyStarted: // the apply is now in flight
+			case <-time.After(5 * time.Second):
+				t.Fatal("apply did not start; /records never reached ApplyChanges")
+			}
+			cancel() // trigger shutdown with the drain disabled
+
+			// The in-flight request must be severed (not completed with 204):
+			// this proves serve force-closed via s.Close rather than falling
+			// through to an expired-context Shutdown that leaves the connection open.
+			select {
+			case code := <-respCh:
+				if code == http.StatusNoContent {
+					t.Fatal("in-flight apply completed (204); expected it to be aborted")
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("in-flight request was not severed; serve did not force-close")
+			}
+
+			select {
+			case <-served:
+			case <-time.After(3 * time.Second):
+				t.Fatal("serve did not return after drain-disabled shutdown")
+			}
+		})
+	}
+}
+
+// TestServeStopsSignalHandlingOnShutdown verifies that serve deregisters the
+// signal handler (invokes the stop callback) as soon as the drain begins, so a
+// second SIGINT/SIGTERM during the drain terminates the process immediately
+// instead of being swallowed by the still-registered handler.
+func TestServeStopsSignalHandlingOnShutdown(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	wh := NewServer()
+	cfg := configuration.Config{ServerShutdownTimeout: time.Second}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// stop records that serve deregistered the signal handler. The buffered
+	// channel tolerates stop being called more than once, like the real
+	// signal.NotifyContext stop function.
+	stopped := make(chan struct{}, 1)
+	stop := func() {
+		select {
+		case stopped <- struct{}{}:
+		default:
+		}
+	}
+
+	served := make(chan struct{})
+	go func() {
+		wh.serve(ctx, stop, l, cfg, &MockProvider{})
+		close(served)
+	}()
+
+	<-wh.Channel // wait until the server is listening
+	cancel()     // trigger graceful shutdown
+
+	select {
+	case <-stopped:
+		// serve deregistered the signal handler as the drain began.
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not stop signal handling when shutdown was triggered")
+	}
+
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not return after shutdown")
+	}
+}
+
+// TestStartReturnsErrorWhenAddressUnavailable exercises Start's bind/error path
+// (and its address formatting) without installing a process-wide signal
+// handler: an occupied port makes net.Listen fail, and Start must surface that
+// as an error rather than exiting the process.
+func TestStartReturnsErrorWhenAddressUnavailable(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = busy.Close() }()
+
+	cfg := configuration.Config{
+		ServerHost: "127.0.0.1",
+		ServerPort: busy.Addr().(*net.TCPAddr).Port,
+	}
+
+	if err := NewServer().Start(cfg, &MockProvider{}); err == nil {
+		t.Fatal("expected Start to return an error when the address is already in use")
+	}
 }

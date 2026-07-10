@@ -62,5 +62,7 @@ func main() {
 	srv := server.NewServer()
 
 	srv.StartHealth(config)
-	srv.Start(config, provider)
+	if err := srv.Start(config, provider); err != nil {
+		log.Fatal(err)
+	}
 }

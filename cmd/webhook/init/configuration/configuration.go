@@ -34,6 +34,7 @@ type Config struct {
 	ServerWriteTimeout      time.Duration `name:"server-write-timeout" env:"SERVER_WRITE_TIMEOUT"`
 	ServerReadHeaderTimeout time.Duration `name:"server-read-header-timeout" env:"SERVER_READ_HEADER_TIMEOUT" default:"5s"`
 	ServerIdleTimeout       time.Duration `name:"server-idle-timeout" env:"SERVER_IDLE_TIMEOUT" default:"30s"`
+	ServerShutdownTimeout   time.Duration `name:"server-shutdown-timeout" env:"SERVER_SHUTDOWN_TIMEOUT"`
 	ServerMaxBodySize       int64         `name:"server-max-body-size" env:"SERVER_MAX_BODY_SIZE" default:"33554432"`
 	DomainFilter            []string      `name:"domain-filter" env:"DOMAIN_FILTER" default:""`
 	ExcludeDomains          []string      `name:"exclude-domain-filter" env:"EXCLUDE_DOMAIN_FILTER" default:""`
