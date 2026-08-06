@@ -52,6 +52,30 @@ func ToAResponseMap(res []ibclient.RecordA) *ResponseMap {
 	return rm
 }
 
+func ToAAAAResponseMap(res []ibclient.RecordAAAA) *ResponseMap {
+	rm := &ResponseMap{
+		Map:        make(map[string]ResponseDetails),
+		RecordType: ibclient.AaaaRecord,
+	}
+	for _, record := range res {
+		name := AsString(record.Name)
+		detail := ResponseDetail{Target: AsString(record.Ipv6Addr), TTL: AsInt64(record.Ttl)}
+		if _, ok := rm.Map[name]; !ok {
+			rm.Map[name] = ResponseDetails{detail}
+			continue
+		}
+		// Infoblox may return the same IPv6 address more than once for a name
+		// (e.g. when the address is stored in a different but equivalent
+		// notation). Duplicate targets would cause a permanent diff in the
+		// plan, so skip them.
+		if rm.Map[name].Contains(detail.Target) {
+			continue
+		}
+		rm.Map[name] = append(rm.Map[name], detail)
+	}
+	return rm
+}
+
 func ToCNAMEResponseMap(res []ibclient.RecordCNAME) *ResponseMap {
 	rm := &ResponseMap{
 		Map:        make(map[string]ResponseDetails),
@@ -107,6 +131,37 @@ func ToHostResponseMap(res []ibclient.HostRecord) *ResponseMap {
 		for _, ip := range record.Ipv4Addrs {
 			rds = append(rds, ResponseDetail{Target: AsString(ip.Ipv4Addr), TTL: AsInt64(record.Ttl)})
 		}
+		if len(rds) == 0 {
+			// a host record may hold IPv6 addresses only, in which case it does
+			// not contribute any A record
+			continue
+		}
+		if _, ok := rm.Map[AsString(record.Name)]; !ok {
+			rm.Map[AsString(record.Name)] = rds
+			continue
+		}
+		rm.Map[AsString(record.Name)] = append(rm.Map[AsString(record.Name)], rds...)
+	}
+	return rm
+}
+
+// ToHostAAAAResponseMap maps the IPv6 addresses of host records to AAAA
+// endpoints, since host records are treated synonymously with A/AAAA records.
+func ToHostAAAAResponseMap(res []ibclient.HostRecord) *ResponseMap {
+	rm := &ResponseMap{
+		Map:        make(map[string]ResponseDetails),
+		RecordType: ibclient.AaaaRecord,
+	}
+	for _, record := range res {
+		rds := ResponseDetails{}
+		for _, ip := range record.Ipv6Addrs {
+			rds = append(rds, ResponseDetail{Target: AsString(ip.Ipv6Addr), TTL: AsInt64(record.Ttl)})
+		}
+		if len(rds) == 0 {
+			// a host record may hold IPv4 addresses only, in which case it does
+			// not contribute any AAAA record
+			continue
+		}
 		if _, ok := rm.Map[AsString(record.Name)]; !ok {
 			rm.Map[AsString(record.Name)] = rds
 			continue
@@ -129,6 +184,16 @@ func ToPTRResponseMap(res []ibclient.RecordPTR) *ResponseMap {
 		rm.Map[AsString(record.PtrdName)] = append(rm.Map[AsString(record.PtrdName)], ResponseDetail{Target: AsString(record.Ipv4Addr), TTL: AsInt64(record.Ttl)})
 	}
 	return rm
+}
+
+// Contains reports whether target is already present in the response details.
+func (rd ResponseDetails) Contains(target string) bool {
+	for _, v := range rd {
+		if v.Target == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (rd ResponseDetails) ToEndpointDetail() (targets []string, ttl endpoint.TTL) {
