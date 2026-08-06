@@ -357,7 +357,19 @@ func (p *Provider) fetchForwardRecordEndpointsForScope(extAttrs map[string]inter
 	}
 	endpoints = append(endpoints, ToAResponseMap(resA).ToEndpoints()...)
 
-	// Include Host records since they should be treated synonymously with A records
+	var resAAAA []ibclient.RecordAAAA
+	objAAAA := ibclient.NewEmptyRecordAAAA()
+	objAAAA.View = p.config.View
+	objAAAA.Ea = extAttrs
+	objAAAA.Zone = zone
+	err = PagingGetObject(p.client, objAAAA, "", searchParams, &resAAAA)
+	if err != nil && !isNotFoundError(err) {
+		metrics.FailedApiCallsTotal.Inc()
+		return nil, fmt.Errorf("could not fetch AAAA records from %s: %w", scopeName, err)
+	}
+	endpoints = append(endpoints, ToAAAAResponseMap(resAAAA).ToEndpoints()...)
+
+	// Include Host records since they should be treated synonymously with A and AAAA records
 	var resH []ibclient.HostRecord
 	objH := ibclient.NewEmptyHostRecord()
 	objH.View = &p.config.View
@@ -368,6 +380,7 @@ func (p *Provider) fetchForwardRecordEndpointsForScope(extAttrs map[string]inter
 		return nil, fmt.Errorf("could not fetch host records from %s: %w", scopeName, err)
 	}
 	endpoints = append(endpoints, ToHostResponseMap(resH).ToEndpoints()...)
+	endpoints = append(endpoints, ToHostAAAAResponseMap(resH).ToEndpoints()...)
 
 	var resC []ibclient.RecordCNAME
 	objC := ibclient.NewEmptyRecordCNAME()
@@ -577,6 +590,14 @@ func getRefID(record *infobloxRecordSet) (string, log.Fields, error) {
 		l["ttl"] = AsInt64(record.obj.(*ibclient.RecordA).Ttl)
 		l["target"] = AsString(record.obj.(*ibclient.RecordA).Ipv4Addr)
 		for _, r := range *record.res.(*[]ibclient.RecordA) {
+			return r.Ref, l, nil
+		}
+		return "", l, nil
+	case "RecordAAAA":
+		l["record"] = AsString(record.obj.(*ibclient.RecordAAAA).Name)
+		l["ttl"] = AsInt64(record.obj.(*ibclient.RecordAAAA).Ttl)
+		l["target"] = AsString(record.obj.(*ibclient.RecordAAAA).Ipv6Addr)
+		for _, r := range *record.res.(*[]ibclient.RecordAAAA) {
 			return r.Ref, l, nil
 		}
 		return "", l, nil
@@ -900,6 +921,35 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 				return
 			}
 			metrics.ApiCallLatency.WithLabelValues("GetObjectA").Observe(duration.Seconds())
+		} else {
+			// If getObject is not set (action == create), we need to set the View for Infoblox to find the parent zone
+			// If View is set for the other actions, Infoblox will complain that the view field is not allowed
+			obj.View = p.config.View
+		}
+		recordSet = infobloxRecordSet{
+			obj: obj,
+			res: &res,
+		}
+	case endpoint.RecordTypeAAAA:
+		var res []ibclient.RecordAAAA
+		obj := ibclient.NewEmptyRecordAAAA()
+		obj.Name = &ep.DNSName
+		// TODO: get target index
+		obj.Ipv6Addr = &ep.Targets[0]
+		obj.Ea = extAttrs
+		obj.Ttl = &ttl
+		obj.UseTtl = &p.config.UseTTL
+		if getObject {
+			queryParams := ibclient.NewQueryParams(false, map[string]string{defaultNameName: *obj.Name, "ipv6addr": *obj.Ipv6Addr})
+			err = p.client.GetObject(obj, "", queryParams, &res)
+			duration := time.Since(startTime)
+			metrics.TotalApiCalls.Inc()
+			if err != nil && !isNotFoundError(err) {
+				metrics.FailedApiCallsTotal.Inc()
+				err = fmt.Errorf("could not fetch AAAA record ['%s':'%s'] : %w", *obj.Name, *obj.Ipv6Addr, err)
+				return
+			}
+			metrics.ApiCallLatency.WithLabelValues("GetObjectAAAA").Observe(duration.Seconds())
 		} else {
 			// If getObject is not set (action == create), we need to set the View for Infoblox to find the parent zone
 			// If View is set for the other actions, Infoblox will complain that the view field is not allowed

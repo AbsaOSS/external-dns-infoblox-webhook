@@ -62,6 +62,7 @@ type getObjectRequest struct {
 
 const (
 	recordA     = "record:a"
+	recordAaaa  = "record:aaaa"
 	recordCname = "record:cname"
 	recordNs    = "record:ns"
 	recordHost  = "record:host"
@@ -160,6 +161,17 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 		)
 		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.RecordA).Name)), *obj.(*ibclient.RecordA).Name)
 		obj.(*ibclient.RecordA).Ref = ref
+	case recordAaaa:
+		newEndpoints = append(
+			newEndpoints,
+			endpoint.NewEndpoint(
+				*obj.(*ibclient.RecordAAAA).Name,
+				endpoint.RecordTypeAAAA,
+				*obj.(*ibclient.RecordAAAA).Ipv6Addr,
+			),
+		)
+		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.RecordAAAA).Name)), *obj.(*ibclient.RecordAAAA).Name)
+		obj.(*ibclient.RecordAAAA).Ref = ref
 	case recordCname:
 		newEndpoints = append(
 			newEndpoints,
@@ -250,6 +262,15 @@ func (client *mockIBConnector) hasObject(obj ibclient.IBObject, ref string) (res
 			}
 			return result, err
 		}
+	case recordAaaa:
+		var res []ibclient.RecordAAAA
+		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
+		if err != nil || len(res) == 0 {
+			if isNotFoundError(err) {
+				return false, nil
+			}
+			return result, err
+		}
 	case recordCname:
 		var res []ibclient.RecordCNAME
 		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
@@ -310,6 +331,8 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 		isPagingType = true
 	case *pagingResponseStruct[ibclient.RecordA]:
 		isPagingType = true
+	case *pagingResponseStruct[ibclient.RecordAAAA]:
+		isPagingType = true
 	case *pagingResponseStruct[ibclient.HostRecord]:
 		isPagingType = true
 	case *pagingResponseStruct[ibclient.RecordTXT]:
@@ -368,6 +391,41 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 				return ibclient.NewNotFoundError("not found")
 			}
 			*res.(*[]ibclient.RecordA) = result
+		}
+	case recordAaaa:
+		var result []ibclient.RecordAAAA
+		for _, object := range *client.mockInfobloxObjects {
+			if object.ObjectType() == recordAaaa {
+				if ref == object.(*ibclient.RecordAAAA).Ref {
+					result = append(result, *object.(*ibclient.RecordAAAA))
+				}
+				if ref != "" &&
+					ref != object.(*ibclient.RecordAAAA).Ref {
+					continue
+				}
+				if AsString(obj.(*ibclient.RecordAAAA).Name) != "" &&
+					AsString(obj.(*ibclient.RecordAAAA).Name) != AsString(object.(*ibclient.RecordAAAA).Name) {
+					continue
+				}
+				if !strings.Contains(req.queryParams, fmt.Sprintf("ipv6addr:%s name:%s", AsString(object.(*ibclient.RecordAAAA).Ipv6Addr), AsString(object.(*ibclient.RecordAAAA).Name))) {
+					if requestMatchesURLRegex(&req, "name~", AsString(object.(*ibclient.RecordAAAA).Name)) {
+						result = append(result, *object.(*ibclient.RecordAAAA))
+						continue
+					}
+					if !strings.Contains(req.queryParams, fmt.Sprintf("zone:%s", object.(*ibclient.RecordAAAA).Zone)) {
+						continue
+					}
+				}
+				result = append(result, *object.(*ibclient.RecordAAAA))
+			}
+		}
+		if isPagingType {
+			res.(*pagingResponseStruct[ibclient.RecordAAAA]).Result = result
+		} else {
+			if len(result) == 0 {
+				return ibclient.NewNotFoundError("not found")
+			}
+			*res.(*[]ibclient.RecordAAAA) = result
 		}
 	case recordCname:
 		var result []ibclient.RecordCNAME
@@ -450,7 +508,11 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 					AsString(obj.(*ibclient.HostRecord).Name) != AsString(object.(*ibclient.HostRecord).Name) {
 					continue
 				}
-				if !strings.Contains(req.queryParams, fmt.Sprintf("ipv4addrs:%s name:%s", AsString(object.(*ibclient.HostRecord).Ipv4Addrs[0].Ipv4Addr), AsString(object.(*ibclient.HostRecord).Name))) {
+				hostIpv4Addr := ""
+				if len(object.(*ibclient.HostRecord).Ipv4Addrs) > 0 {
+					hostIpv4Addr = AsString(object.(*ibclient.HostRecord).Ipv4Addrs[0].Ipv4Addr)
+				}
+				if !strings.Contains(req.queryParams, fmt.Sprintf("ipv4addrs:%s name:%s", hostIpv4Addr, AsString(object.(*ibclient.HostRecord).Name))) {
 					if requestMatchesURLRegex(&req, "name~", AsString(object.(*ibclient.HostRecord).Name)) {
 						result = append(result, *object.(*ibclient.HostRecord))
 						continue
@@ -580,6 +642,21 @@ func (client *mockIBConnector) DeleteObject(ref string) (refRes string, err erro
 				),
 			)
 		}
+	case "record:aaaa":
+		var records []ibclient.RecordAAAA
+		obj := ibclient.NewEmptyRecordAAAA()
+		obj.Name = &result[2]
+		client.GetObject(obj, ref, nil, &records) // nolint: errcheck
+		for _, record := range records {
+			client.deletedEndpoints = append(
+				client.deletedEndpoints,
+				endpoint.NewEndpoint(
+					*record.Name,
+					endpoint.RecordTypeAAAA,
+					"",
+				),
+			)
+		}
 	case "record:cname":
 		var records []ibclient.RecordCNAME
 		obj := ibclient.NewEmptyRecordCNAME()
@@ -670,6 +747,15 @@ func (client *mockIBConnector) UpdateObject(obj ibclient.IBObject, ref string) (
 				endpoint.RecordTypeA,
 			),
 		)
+	case "record:aaaa":
+		client.updatedEndpoints = append(
+			client.updatedEndpoints,
+			endpoint.NewEndpoint(
+				*obj.(*ibclient.RecordAAAA).Name,
+				*obj.(*ibclient.RecordAAAA).Ipv6Addr,
+				endpoint.RecordTypeAAAA,
+			),
+		)
 	case "record:cname":
 		client.updatedEndpoints = append(
 			client.updatedEndpoints,
@@ -728,6 +814,13 @@ func createMockInfobloxObjectWithZone(name, recordType, value, zone string) ibcl
 		obj.Ipv4Addr = &value
 		obj.Zone = zone
 		return obj
+	case endpoint.RecordTypeAAAA:
+		obj := ibclient.NewEmptyRecordAAAA()
+		obj.Name = &name
+		obj.Ref = ref
+		obj.Ipv6Addr = &value
+		obj.Zone = zone
+		return obj
 	case endpoint.RecordTypeCNAME:
 		obj := ibclient.NewEmptyRecordCNAME()
 		obj.Name = &name
@@ -781,6 +874,12 @@ func createMockInfobloxObject(name, recordType, value string) ibclient.IBObject 
 		obj.Ref = ref
 		obj.Ipv4Addr = &value
 		return obj
+	case endpoint.RecordTypeAAAA:
+		obj := ibclient.NewEmptyRecordAAAA()
+		obj.Name = &name
+		obj.Ref = ref
+		obj.Ipv6Addr = &value
+		return obj
 	case endpoint.RecordTypeCNAME:
 		obj := ibclient.NewEmptyRecordCNAME()
 		obj.Name = &name
@@ -820,6 +919,22 @@ func createMockInfobloxObject(name, recordType, value string) ibclient.IBObject 
 	return nil
 }
 
+// createMockInfobloxHostObjectWithZone builds a host record holding an
+// arbitrary number of IPv4 and IPv6 addresses.
+func createMockInfobloxHostObjectWithZone(name string, ipv4Addrs, ipv6Addrs []string, zone string) ibclient.IBObject {
+	obj := ibclient.NewEmptyHostRecord()
+	obj.Name = &name
+	obj.Ref = fmt.Sprintf("record:host/%s:%s/default", base64.StdEncoding.EncodeToString([]byte(name)), name)
+	obj.Zone = zone
+	for _, ipv4Addr := range ipv4Addrs {
+		obj.Ipv4Addrs = append(obj.Ipv4Addrs, ibclient.HostRecordIpv4Addr{Ipv4Addr: &ipv4Addr})
+	}
+	for _, ipv6Addr := range ipv6Addrs {
+		obj.Ipv6Addrs = append(obj.Ipv6Addrs, ibclient.HostRecordIpv6Addr{Ipv6Addr: &ipv6Addr})
+	}
+	return obj
+}
+
 // nolint: unparam
 func newInfobloxProvider(domainFilter *endpoint.DomainFilter, _ provider.ZoneIDFilter, view string, dryRun bool, createPTR bool, client ibclient.IBConnector) *Provider {
 	return &Provider{
@@ -854,7 +969,14 @@ func TestInfobloxRecords(t *testing.T) {
 			createMockInfobloxObjectWithZone("existing.example.com", endpoint.RecordTypeA, "124.1.1.1", "example.com"),
 			createMockInfobloxObjectWithZone("existing.example.com", endpoint.RecordTypeA, "124.1.1.2", "example.com"),
 			createMockInfobloxObjectWithZone("existing.example.com", endpoint.RecordTypeTXT, "heritage=external-dns,external-dns/owner=existing", "example.com"),
+			createMockInfobloxObjectWithZone("ipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1", "example.com"),
+			createMockInfobloxObjectWithZone("multipleipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::2", "example.com"),
+			createMockInfobloxObjectWithZone("multipleipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1", "example.com"),
+			// Infoblox may return the same target twice, it must be de-duplicated
+			createMockInfobloxObjectWithZone("multipleipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1", "example.com"),
 			createMockInfobloxObjectWithZone("host.example.com", "HOST", "125.1.1.1", "example.com"),
+			createMockInfobloxHostObjectWithZone("dualstack.example.com", []string{"125.1.1.2"}, []string{"2001:db8::125"}, "example.com"),
+			createMockInfobloxHostObjectWithZone("ipv6only.example.com", nil, []string{"2001:db8::126"}, "example.com"),
 		},
 	}
 
@@ -876,7 +998,12 @@ func TestInfobloxRecords(t *testing.T) {
 		endpoint.NewEndpoint("multiple.example.com", endpoint.RecordTypeTXT, "heritage=external-dns,external-dns/owner=default"),
 		endpoint.NewEndpoint("existing.example.com", endpoint.RecordTypeA, "124.1.1.1", "124.1.1.2"),
 		endpoint.NewEndpoint("existing.example.com", endpoint.RecordTypeTXT, "heritage=external-dns,external-dns/owner=existing"),
+		endpoint.NewEndpoint("ipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1"),
+		endpoint.NewEndpoint("multipleipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1", "2001:db8::2"),
 		endpoint.NewEndpoint("host.example.com", endpoint.RecordTypeA, "125.1.1.1"),
+		endpoint.NewEndpoint("dualstack.example.com", endpoint.RecordTypeA, "125.1.1.2"),
+		endpoint.NewEndpoint("dualstack.example.com", endpoint.RecordTypeAAAA, "2001:db8::125"),
+		endpoint.NewEndpoint("ipv6only.example.com", endpoint.RecordTypeAAAA, "2001:db8::126"),
 	}
 	validateEndpoints(t, actual, expected)
 	client.verifyGetObjectRequest(t, "zone_auth", "", &map[string]string{
@@ -886,6 +1013,13 @@ func TestInfobloxRecords(t *testing.T) {
 		ExpectNotRequestURLQueryParam(t, "view").
 		ExpectNotRequestURLQueryParam(t, "zone")
 	client.verifyGetObjectRequest(t, "record:a", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"zone":              "example.com"}).
+		ExpectNotRequestURLQueryParam(t, "view").
+		ExpectRequestURLQueryParam(t, "zone", "example.com")
+	client.verifyGetObjectRequest(t, "record:aaaa", "", &map[string]string{
 		"_max_results":      "1000",
 		"_paging":           "1",
 		"_return_as_object": "1",
@@ -960,6 +1094,14 @@ func TestInfobloxRecordsWithView(t *testing.T) {
 		"view":              "Inside"}).
 		ExpectRequestURLQueryParam(t, "zone", "foo.example.com").
 		ExpectRequestURLQueryParam(t, "view", "Inside")
+	client.verifyGetObjectRequest(t, "record:aaaa", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"zone":              "foo.example.com",
+		"view":              "Inside"}).
+		ExpectRequestURLQueryParam(t, "zone", "foo.example.com").
+		ExpectRequestURLQueryParam(t, "view", "Inside")
 	client.verifyGetObjectRequest(t, "record:host", "", &map[string]string{
 		"_max_results":      "1000",
 		"_paging":           "1",
@@ -989,6 +1131,12 @@ func TestInfobloxRecordsWithView(t *testing.T) {
 		ExpectRequestURLQueryParam(t, "zone", "foo.example.com").
 		ExpectRequestURLQueryParam(t, "view", "Inside")
 	client.verifyGetObjectRequest(t, "record:a", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1", "zone": "bar.example.com", "view": "Inside"}).
+		ExpectRequestURLQueryParam(t, "zone", "bar.example.com").
+		ExpectRequestURLQueryParam(t, "view", "Inside")
+	client.verifyGetObjectRequest(t, "record:aaaa", "", &map[string]string{
 		"_max_results":      "1000",
 		"_paging":           "1",
 		"_return_as_object": "1", "zone": "bar.example.com", "view": "Inside"}).
@@ -1056,6 +1204,14 @@ func TestInfobloxRecordsWithNameRegexUsesGlobalQueries(t *testing.T) {
 	validateEndpoints(t, actual, expected)
 
 	client.verifyGetObjectRequest(t, "record:a", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"view":              "Inside"}).
+		ExpectRequestURLQueryParam(t, "name~", "^(cat\\.foo|dog\\.bar)\\.example\\.com$").
+		ExpectRequestURLQueryParam(t, "view", "Inside").
+		ExpectNotRequestURLQueryParam(t, "zone")
+	client.verifyGetObjectRequest(t, "record:aaaa", "", &map[string]string{
 		"_max_results":      "1000",
 		"_paging":           "1",
 		"_return_as_object": "1",
@@ -1170,7 +1326,9 @@ func TestInfobloxApplyChanges(t *testing.T) {
 		endpoint.NewEndpoint("bar.example.com", endpoint.RecordTypeTXT, "tag"),
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeA, "5.6.7.8"),
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeTXT, "tag"),
+		endpoint.NewEndpoint("ipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1"),
 		endpoint.NewEndpoint("new.example.com", endpoint.RecordTypeA, "111.222.111.222"),
+		endpoint.NewEndpoint("newipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::22"),
 		endpoint.NewEndpoint("newcname.example.com", endpoint.RecordTypeCNAME, "other.com"),
 		endpoint.NewEndpoint("newzone.example.com", endpoint.RecordTypeNS, "newns-zone.example.com"),
 		endpoint.NewEndpoint("multiple.example.com", endpoint.RecordTypeA, "1.2.3.4,3.4.5.6,8.9.10.11"),
@@ -1179,9 +1337,11 @@ func TestInfobloxApplyChanges(t *testing.T) {
 
 	validateEndpoints(t, client.deletedEndpoints, []*endpoint.Endpoint{
 		endpoint.NewEndpoint("old.example.com", endpoint.RecordTypeA, ""),
+		endpoint.NewEndpoint("oldipv6.example.com", endpoint.RecordTypeAAAA, ""),
 		endpoint.NewEndpoint("oldcname.example.com", endpoint.RecordTypeCNAME, ""),
 		endpoint.NewEndpoint("oldzone.example.com", endpoint.RecordTypeNS, ""),
 		endpoint.NewEndpoint("deleted.example.com", endpoint.RecordTypeA, ""),
+		endpoint.NewEndpoint("deletedipv6.example.com", endpoint.RecordTypeAAAA, ""),
 		endpoint.NewEndpoint("deletedcname.example.com", endpoint.RecordTypeCNAME, ""),
 		endpoint.NewEndpoint("deletedzone.example.com", endpoint.RecordTypeNS, ""),
 	})
@@ -1279,7 +1439,9 @@ func TestInfobloxApplyChangesReverse(t *testing.T) {
 		endpoint.NewEndpoint("bar.example.com", endpoint.RecordTypeTXT, "tag"),
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeA, "5.6.7.8"),
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeTXT, "tag"),
+		endpoint.NewEndpoint("ipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1"),
 		endpoint.NewEndpoint("new.example.com", endpoint.RecordTypeA, "111.222.111.222"),
+		endpoint.NewEndpoint("newipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::22"),
 		endpoint.NewEndpoint("newcname.example.com", endpoint.RecordTypeCNAME, "other.com"),
 		endpoint.NewEndpoint("newzone.example.com", endpoint.RecordTypeNS, "newns-zone.example.com"),
 		endpoint.NewEndpoint("multiple.example.com", endpoint.RecordTypeA, "1.2.3.4,3.4.5.6,8.9.10.11"),
@@ -1288,10 +1450,12 @@ func TestInfobloxApplyChangesReverse(t *testing.T) {
 
 	validateEndpoints(t, client.deletedEndpoints, []*endpoint.Endpoint{
 		endpoint.NewEndpoint("old.example.com", endpoint.RecordTypeA, ""),
+		endpoint.NewEndpoint("oldipv6.example.com", endpoint.RecordTypeAAAA, ""),
 		endpoint.NewEndpoint("oldcname.example.com", endpoint.RecordTypeCNAME, ""),
 		endpoint.NewEndpoint("oldzone.example.com", endpoint.RecordTypeNS, ""),
 		endpoint.NewEndpoint("deleted.example.com", endpoint.RecordTypeA, ""),
 		endpoint.NewEndpoint("deleted.example.com", endpoint.RecordTypePTR, ""),
+		endpoint.NewEndpoint("deletedipv6.example.com", endpoint.RecordTypeAAAA, ""),
 		endpoint.NewEndpoint("deletedcname.example.com", endpoint.RecordTypeCNAME, ""),
 		endpoint.NewEndpoint("deletedzone.example.com", endpoint.RecordTypeNS, ""),
 	})
@@ -1325,7 +1489,9 @@ func testInfobloxApplyChangesInternal(t *testing.T, dryRun, createPTR bool, clie
 		createMockInfobloxObjectWithZone("deleted.example.com", endpoint.RecordTypePTR, "121.212.121.212", "example.com"),
 		createMockInfobloxObjectWithZone("deletedcname.example.com", endpoint.RecordTypeCNAME, "other.com", "example.com"),
 		createMockInfobloxObjectWithZone("deletedzone.example.com", endpoint.RecordTypeNS, "deletedns-zone.example.com", "example.com"),
+		createMockInfobloxObjectWithZone("deletedipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::12", "example.com"),
 		createMockInfobloxObjectWithZone("old.example.com", endpoint.RecordTypeA, "121.212.121.212", "example.com"),
+		createMockInfobloxObjectWithZone("oldipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::21", "example.com"),
 		createMockInfobloxObjectWithZone("oldcname.example.com", endpoint.RecordTypeCNAME, "other.com", "example.com"),
 		createMockInfobloxObjectWithZone("oldzone.example.com", endpoint.RecordTypeNS, "oldns-zone.example.com", "example.com"),
 	}
@@ -1349,31 +1515,39 @@ func testInfobloxApplyChangesInternal(t *testing.T, dryRun, createPTR bool, clie
 		endpoint.NewEndpoint("bar.example.com", endpoint.RecordTypeTXT, "tag"),
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeA, "5.6.7.8"),
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeTXT, "tag"),
+		endpoint.NewEndpoint("ipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1"),
 		endpoint.NewEndpoint("nope.com", endpoint.RecordTypeA, "4.4.4.4"),
 		endpoint.NewEndpoint("nope.com", endpoint.RecordTypeTXT, "tag"),
+		endpoint.NewEndpoint("ipv6.nope.com", endpoint.RecordTypeAAAA, "2001:db8::2"),
 		endpoint.NewEndpoint("multiple.example.com", endpoint.RecordTypeA, "1.2.3.4,3.4.5.6,8.9.10.11"),
 		endpoint.NewEndpoint("multiple.example.com", endpoint.RecordTypeTXT, "tag-multiple-A-records"),
 	}
 
 	updateOldRecords := []*endpoint.Endpoint{
 		endpoint.NewEndpoint("old.example.com", endpoint.RecordTypeA, "121.212.121.212"),
+		endpoint.NewEndpoint("oldipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::21"),
 		endpoint.NewEndpoint("oldcname.example.com", endpoint.RecordTypeCNAME, "other.com"),
 		endpoint.NewEndpoint("oldzone.example.com", endpoint.RecordTypeNS, "oldns-zone.example.com"),
 		endpoint.NewEndpoint("old.nope.com", endpoint.RecordTypeA, "121.212.121.212"),
+		endpoint.NewEndpoint("oldipv6.nope.com", endpoint.RecordTypeAAAA, "2001:db8::21"),
 	}
 
 	updateNewRecords := []*endpoint.Endpoint{
 		endpoint.NewEndpoint("new.example.com", endpoint.RecordTypeA, "111.222.111.222"),
+		endpoint.NewEndpoint("newipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::22"),
 		endpoint.NewEndpoint("newcname.example.com", endpoint.RecordTypeCNAME, "other.com"),
 		endpoint.NewEndpoint("newzone.example.com", endpoint.RecordTypeNS, "newns-zone.example.com"),
 		endpoint.NewEndpoint("new.nope.com", endpoint.RecordTypeA, "222.111.222.111"),
+		endpoint.NewEndpoint("newipv6.nope.com", endpoint.RecordTypeAAAA, "2001:db8::22"),
 	}
 
 	deleteRecords := []*endpoint.Endpoint{
 		endpoint.NewEndpoint("deleted.example.com", endpoint.RecordTypeA, "121.212.121.212"),
+		endpoint.NewEndpoint("deletedipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::12"),
 		endpoint.NewEndpoint("deletedcname.example.com", endpoint.RecordTypeCNAME, "other.com"),
 		endpoint.NewEndpoint("deletedzone.example.com", endpoint.RecordTypeNS, "deletedns-zone.example.com"),
 		endpoint.NewEndpoint("deleted.nope.com", endpoint.RecordTypeA, "222.111.222.111"),
+		endpoint.NewEndpoint("deletedipv6.nope.com", endpoint.RecordTypeAAAA, "2001:db8::12"),
 	}
 
 	if createPTR {
