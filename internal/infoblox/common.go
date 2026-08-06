@@ -178,11 +178,17 @@ func ToPTRResponseMap(res []ibclient.RecordPTR) *ResponseMap {
 		RecordType: ibclient.PtrRecord,
 	}
 	for _, record := range res {
+		// A PTR record carries its target either in ipv4addr (in-addr.arpa) or
+		// in ipv6addr (ip6.arpa), never in both.
+		target := AsString(record.Ipv4Addr)
+		if target == "" {
+			target = AsString(record.Ipv6Addr)
+		}
 		if _, ok := rm.Map[AsString(record.PtrdName)]; !ok {
-			rm.Map[AsString(record.PtrdName)] = ResponseDetails{{Target: AsString(record.Ipv4Addr), TTL: AsInt64(record.Ttl)}}
+			rm.Map[AsString(record.PtrdName)] = ResponseDetails{{Target: target, TTL: AsInt64(record.Ttl)}}
 			continue
 		}
-		rm.Map[AsString(record.PtrdName)] = append(rm.Map[AsString(record.PtrdName)], ResponseDetail{Target: AsString(record.Ipv4Addr), TTL: AsInt64(record.Ttl)})
+		rm.Map[AsString(record.PtrdName)] = append(rm.Map[AsString(record.PtrdName)], ResponseDetail{Target: target, TTL: AsInt64(record.Ttl)})
 	}
 	return rm
 }
