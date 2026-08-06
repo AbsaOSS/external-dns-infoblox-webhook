@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"reflect"
 	"strconv"
@@ -70,6 +71,7 @@ type StartupConfig struct {
 	SSLVerify    bool   `name:"infoblox-ssl-verify" env:"INFOBLOX_SSL_VERIFY" default:"true"`
 	DryRun       bool   `name:"infoblox-dry-run" env:"INFOBLOX_DRY_RUN" default:"false"`
 	View         string `name:"infoblox-view" env:"INFOBLOX_VIEW" default:"default"`
+	BasePath     string `name:"infoblox-wapi-base-path" env:"INFOBLOX_WAPI_BASE_PATH" default:""`
 	MaxResults   int    `name:"infoblox-max-results" env:"INFOBLOX_MAX_RESULTS" default:"1500"`
 	CreatePTR    bool   `name:"infoblox-create-ptr" env:"INFOBLOX_CREATE_PTR" default:"false"`
 	DefaultTTL   int    `name:"infoblox-default-ttl" env:"INFOBLOX_DEFAULT_TTL" default:"300"`
@@ -90,6 +92,7 @@ type ExtendedRequestBuilder struct {
 	fqdnRegEx  string
 	nameRegEx  string
 	maxResults int
+	basePath   string
 	ibclient.WapiRequestBuilder
 }
 
@@ -109,10 +112,37 @@ func NewExtendedRequestBuilder(maxResults int, fqdnRegEx string, nameRegEx strin
 	}
 }
 
+// NewExtendedRequestBuilderWithBasePath behaves like NewExtendedRequestBuilder but
+// additionally prefixes every request path with basePath. An empty (or effectively
+// empty) basePath leaves the request path untouched.
+func NewExtendedRequestBuilderWithBasePath(maxResults int, fqdnRegEx, nameRegEx, basePath string) *ExtendedRequestBuilder {
+	rb := NewExtendedRequestBuilder(maxResults, fqdnRegEx, nameRegEx)
+	rb.basePath = normalizeBasePath(basePath)
+	return rb
+}
+
+// normalizeBasePath turns a user supplied WAPI base path into a clean, slash-free
+// prefix. Surrounding whitespace, leading/trailing slashes and empty path segments
+// are dropped, so "/", "  ", "//nios//" and "" all normalize to "" which means
+// "no prefix" and therefore keeps the default upstream behaviour.
+func normalizeBasePath(basePath string) string {
+	segments := make([]string, 0, 2)
+	for _, segment := range strings.Split(basePath, "/") {
+		if segment = strings.TrimSpace(segment); segment != "" {
+			segments = append(segments, segment)
+		}
+	}
+	return strings.Join(segments, "/")
+}
+
 // BuildRequest prepares the api request. it uses BuildRequest of
 // WapiRequestBuilder and then add the _max_requests parameter
 func (mrb *ExtendedRequestBuilder) BuildRequest(t ibclient.RequestType, obj ibclient.IBObject, ref string, queryParams *ibclient.QueryParams) (req *http.Request, err error) {
 	req, err = mrb.WapiRequestBuilder.BuildRequest(t, obj, ref, queryParams)
+	if err != nil {
+		return
+	}
+	mrb.applyBasePath(req)
 	if req.Method == "GET" {
 		query := req.URL.Query()
 		if mrb.maxResults > 0 {
@@ -132,6 +162,41 @@ func (mrb *ExtendedRequestBuilder) BuildRequest(t ibclient.RequestType, obj ibcl
 		req.URL.RawQuery = query.Encode()
 	}
 	return
+}
+
+// applyBasePath prefixes the request path with the configured WAPI base path.
+// It is a no-op when no base path is configured, which keeps the request URL
+// byte-identical to the one produced by the upstream infoblox client.
+func (mrb *ExtendedRequestBuilder) applyBasePath(req *http.Request) {
+	if mrb.basePath == "" || req == nil || req.URL == nil {
+		return
+	}
+	prefix := "/" + (&url.URL{Path: mrb.basePath}).EscapedPath()
+	prefixed, err := url.Parse(prefix + req.URL.EscapedPath())
+	if err != nil {
+		// basePath escaping is done above, so this cannot realistically happen;
+		// fall back to the unprefixed path rather than corrupting the request.
+		log.Warnf("could not apply WAPI base path %q: %v", mrb.basePath, err)
+		return
+	}
+	req.URL.Path = prefixed.Path
+	req.URL.RawPath = prefixed.RawPath
+}
+
+// newRequestBuilder selects the request builder for the given configuration. The
+// extended builder is required as soon as any of _max_results, the FQDN/name regex
+// filters or a custom WAPI base path is configured; otherwise the upstream default
+// builder is used so the request URLs stay byte-identical to previous releases.
+func newRequestBuilder(cfg *StartupConfig, hostCfg ibclient.HostConfig, authCfg ibclient.AuthConfig) (ibclient.HttpRequestBuilder, error) {
+	basePath := normalizeBasePath(cfg.BasePath)
+	if basePath != "" {
+		log.Infof("using custom WAPI base path: /%s/wapi/v%s", basePath, cfg.Version)
+	}
+
+	if cfg.MaxResults != 0 || cfg.FQDNRegEx != "" || cfg.NameRegEx != "" || basePath != "" {
+		return NewExtendedRequestBuilderWithBasePath(cfg.MaxResults, cfg.FQDNRegEx, cfg.NameRegEx, basePath), nil
+	}
+	return ibclient.NewWapiRequestBuilder(hostCfg, authCfg)
 }
 
 // NewInfobloxProvider creates a new Infoblox provider.
@@ -156,19 +221,9 @@ func NewInfobloxProvider(cfg *StartupConfig, domainFilter *endpoint.DomainFilter
 		httpPoolConnections,
 	)
 
-	var (
-		requestBuilder ibclient.HttpRequestBuilder
-		err            error
-	)
-	if cfg.MaxResults != 0 || cfg.FQDNRegEx != "" || cfg.NameRegEx != "" {
-		// use our own HttpRequestBuilder which sets _max_results parameter on GET requests
-		requestBuilder = NewExtendedRequestBuilder(cfg.MaxResults, cfg.FQDNRegEx, cfg.NameRegEx)
-	} else {
-		// use the default HttpRequestBuilder of the infoblox client
-		requestBuilder, err = ibclient.NewWapiRequestBuilder(hostCfg, authCfg)
-		if err != nil {
-			return nil, err
-		}
+	requestBuilder, err := newRequestBuilder(cfg, hostCfg, authCfg)
+	if err != nil {
+		return nil, err
 	}
 
 	requestor := &ibclient.WapiHttpRequestor{}
