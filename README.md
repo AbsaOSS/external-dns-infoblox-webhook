@@ -60,6 +60,14 @@ When infoblox `INFOBLOX_CREATE_PTR` is set to `true`, make shure that `DOMAIN_FI
 DOMAIN_FILTER="cloud.example, 1.2.3.0/24"
 ```
 
+PTR records are created for both A and AAAA records. IPv6 reverse zones use the
+nibble format under `ip6.arpa`, so the IPv6 network has to be part of the
+`DOMAIN_FILTER` in CIDR notation as well:
+
+```bash
+DOMAIN_FILTER="cloud.example, 1.2.3.0/24, 2001:db8::/64"
+```
+
 **external-dns-infoblox-webhook Environment Variables**:
 
 | Environment Variable           | Default value | Required |

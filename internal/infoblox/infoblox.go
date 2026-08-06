@@ -58,6 +58,26 @@ func isNotFoundError(err error) bool {
 	return errors.As(err, &notFound)
 }
 
+// isIPv6 reports whether addr is an IPv6 address. IPv4 addresses, IPv4-mapped
+// IPv6 addresses and anything that is not an IP address at all are not IPv6.
+func isIPv6(addr string) bool {
+	ip := net.ParseIP(addr)
+	return ip != nil && ip.To4() == nil
+}
+
+// setPTRAddr stores addr in the address field of obj that matches its family
+// and returns the name of that WAPI field. An IPv6 PTR lives in ip6.arpa and is
+// addressed through ipv6addr, an IPv4 PTR lives in in-addr.arpa and is
+// addressed through ipv4addr.
+func setPTRAddr(obj *ibclient.RecordPTR, addr *string) string {
+	if isIPv6(*addr) {
+		obj.Ipv6Addr = addr
+		return "ipv6addr"
+	}
+	obj.Ipv4Addr = addr
+	return "ipv4addr"
+}
+
 type Provider struct {
 	provider.BaseProvider
 	client       ibclient.IBConnector
@@ -286,10 +306,10 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 		}
 
 		for i := range endpoints {
-			if endpoints[i].RecordType != endpoint.RecordTypeA {
+			if endpoints[i].RecordType != endpoint.RecordTypeA && endpoints[i].RecordType != endpoint.RecordTypeAAAA {
 				continue
 			}
-			// if PTR record already exists for A record, then mark it as such
+			// if PTR record already exists for A/AAAA record, then mark it as such
 			if ptrRecordsMap[endpoints[i].DNSName] {
 				found := false
 				for j := range endpoints[i].ProviderSpecific {
@@ -457,10 +477,10 @@ func (p *Provider) AdjustEndpoints(endpoints []*endpoint.Endpoint) ([]*endpoint.
 		return endpoints, nil
 	}
 
-	// for all A records, we want to create PTR records
+	// for all A and AAAA records, we want to create PTR records
 	// so add provider specific property to track if the record was created or not
 	for i := range endpoints {
-		if endpoints[i].RecordType == endpoint.RecordTypeA {
+		if endpoints[i].RecordType == endpoint.RecordTypeA || endpoints[i].RecordType == endpoint.RecordTypeAAAA {
 			found := false
 			for j := range endpoints[i].ProviderSpecific {
 				if endpoints[i].ProviderSpecific[j].Name == providerSpecificInfobloxPtrRecord {
@@ -810,7 +830,7 @@ func (p *Provider) ChangesByZone(zones []*ibclient.ZoneAuth, changeSets []*infob
 		}
 		changes[zone.Fqdn] = append(changes[zone.Fqdn], c)
 
-		if p.config.CreatePTR && c.Endpoint.RecordType == endpoint.RecordTypeA {
+		if p.config.CreatePTR && (c.Endpoint.RecordType == endpoint.RecordTypeA || c.Endpoint.RecordType == endpoint.RecordTypeAAAA) {
 			if p.domainFilter.IsConfigured() {
 				for _, filter := range p.domainFilter.Filters {
 					_, ipnet, err := net.ParseCIDR(filter)
@@ -964,16 +984,16 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		obj := ibclient.NewEmptyRecordPTR()
 		obj.PtrdName = &ep.DNSName
 		// TODO: get target index
-		obj.Ipv4Addr = &ep.Targets[0]
+		addrField := setPTRAddr(obj, &ep.Targets[0])
 		obj.Ea = extAttrs
 		obj.Ttl = &ttl
 		obj.UseTtl = &p.config.UseTTL
 		if getObject {
-			queryParams := ibclient.NewQueryParams(false, map[string]string{"ptrdname": *obj.PtrdName, "ipv4addr": *obj.Ipv4Addr})
+			queryParams := ibclient.NewQueryParams(false, map[string]string{"ptrdname": *obj.PtrdName, addrField: ep.Targets[0]})
 			err = p.getObject(obj, queryParams, &res)
 			duration := time.Since(startTime)
 			if err != nil {
-				err = fmt.Errorf("could not fetch PTR record ['%s':'%s'] : %w", *obj.PtrdName, *obj.Ipv4Addr, err)
+				err = fmt.Errorf("could not fetch PTR record ['%s':'%s'] : %w", *obj.PtrdName, ep.Targets[0], err)
 				if !isNotFoundError(err) {
 					return
 				}
