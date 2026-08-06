@@ -10,6 +10,9 @@ Infoblox provider based on in-tree provider for ExternalDNS. Supported records:
 | PTR         | not tested |
 
 
+See [docs/examples.md](docs/examples.md) for worked examples of creating records with the
+`DNSEndpoint` CRD and with Service/Ingress annotations.
+
 ## Quick start
 
 To run the provider, you must provide the following Environment Variables:

@@ -22,6 +22,7 @@
 !Dockerfile
 !CODEOWNERS
 !README.md
+!/docs/*.md
 !LICENSE
 !renovate.json
 
