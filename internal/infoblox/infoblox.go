@@ -62,19 +62,19 @@ type Provider struct {
 
 // StartupConfig clarifies the method signature
 type StartupConfig struct {
-	Host         string `env:"INFOBLOX_HOST,required" envDefault:"localhost"`
-	Port         int    `env:"INFOBLOX_PORT,required" envDefault:"443"`
-	Username     string `env:"INFOBLOX_WAPI_USER,required"`
-	Password     string `env:"INFOBLOX_WAPI_PASSWORD,required"`
-	Version      string `env:"INFOBLOX_VERSION,required"`
-	SSLVerify    bool   `env:"INFOBLOX_SSL_VERIFY" envDefault:"true"`
-	DryRun       bool   `env:"INFOBLOX_DRY_RUN" envDefault:"false"`
-	View         string `env:"INFOBLOX_VIEW" envDefault:"default"`
-	MaxResults   int    `env:"INFOBLOX_MAX_RESULTS" envDefault:"1500"`
-	CreatePTR    bool   `env:"INFOBLOX_CREATE_PTR" envDefault:"false"`
-	DefaultTTL   int    `env:"INFOBLOX_DEFAULT_TTL" envDefault:"300"`
-	UseTTL       bool   `env:"INFOBLOX_USE_TTL" envDefault:"true"`
-	ExtAttrsJSON string `env:"INFOBLOX_EXTENSIBLE_ATTRIBUTES_JSON" envDefault:"{}"`
+	Host         string `name:"infoblox-host" env:"INFOBLOX_HOST" required:"" default:"localhost"`
+	Port         int    `name:"infoblox-port" env:"INFOBLOX_PORT" required:"" default:"443"`
+	Username     string `name:"infoblox-wapi-user" env:"INFOBLOX_WAPI_USER" required:""`
+	Password     string `name:"infoblox-wapi-password" env:"INFOBLOX_WAPI_PASSWORD" required:""`
+	Version      string `name:"infoblox-version" env:"INFOBLOX_VERSION" required:""`
+	SSLVerify    bool   `name:"infoblox-ssl-verify" env:"INFOBLOX_SSL_VERIFY" default:"true"`
+	DryRun       bool   `name:"infoblox-dry-run" env:"INFOBLOX_DRY_RUN" default:"false"`
+	View         string `name:"infoblox-view" env:"INFOBLOX_VIEW" default:"default"`
+	MaxResults   int    `name:"infoblox-max-results" env:"INFOBLOX_MAX_RESULTS" default:"1500"`
+	CreatePTR    bool   `name:"infoblox-create-ptr" env:"INFOBLOX_CREATE_PTR" default:"false"`
+	DefaultTTL   int    `name:"infoblox-default-ttl" env:"INFOBLOX_DEFAULT_TTL" default:"300"`
+	UseTTL       bool   `name:"infoblox-use-ttl" env:"INFOBLOX_USE_TTL" default:"true"`
+	ExtAttrsJSON string `name:"infoblox-extensible-attributes-json" env:"INFOBLOX_EXTENSIBLE_ATTRIBUTES_JSON" default:"{}"`
 	FQDNRegEx    string
 	NameRegEx    string
 }
@@ -92,6 +92,12 @@ type ExtendedRequestBuilder struct {
 	maxResults int
 	ibclient.WapiRequestBuilder
 }
+
+const (
+	defaultViewName = "view"
+	defaultNameName = "name"
+	defaultZoneName = "zone"
+)
 
 // NewExtendedRequestBuilder returns a ExtendedRequestBuilder which adds
 // _max_results query parameter to all GET requests
@@ -194,7 +200,7 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 
 	for _, zone := range zones {
 		log.Debugf("fetch records from zone '%s'", zone.Fqdn)
-		searchParams := map[string]string{"zone": zone.Fqdn, "view": p.config.View}
+		searchParams := map[string]string{defaultZoneName: zone.Fqdn, defaultViewName: p.config.View}
 		var resA []ibclient.RecordA
 		objA := ibclient.NewEmptyRecordA()
 		objA.View = p.config.View
@@ -268,7 +274,7 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 				objP.View = p.config.View
 				objP.Ea = extAttrs
 				objP.Zone = arpaZone
-				err = PagingGetObject(p.client, objP, "", map[string]string{"zone": arpaZone, "view": p.config.View}, &resP)
+				err = PagingGetObject(p.client, objP, "", map[string]string{defaultZoneName: arpaZone, defaultViewName: p.config.View}, &resP)
 				if err != nil && !isNotFoundError(err) {
 					metrics.FailedApiCallsTotal.Inc()
 					return nil, fmt.Errorf("could not fetch PTR records from zone '%s': %w", zone.Fqdn, err)
@@ -401,7 +407,7 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 			}
 
 			logFields["action"] = change.Action
-			logFields["zone"] = zone
+			logFields[defaultZoneName] = zone
 			if p.config.DryRun {
 				log.WithFields(logFields).Info("Dry run: skipping..")
 				continue
@@ -616,7 +622,7 @@ func (p *Provider) zones() ([]ibclient.ZoneAuth, error) {
 	)
 	searchFields := map[string]string{}
 	if p.config.View != "" {
-		searchFields["view"] = p.config.View
+		searchFields[defaultViewName] = p.config.View
 	}
 	err := PagingGetObject(p.client, obj, "", searchFields, &res)
 	if err != nil && !isNotFoundError(err) {
@@ -736,7 +742,7 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		obj.Ttl = &ttl
 		obj.UseTtl = &p.config.UseTTL
 		if getObject {
-			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.Name, "ipv4addr": *obj.Ipv4Addr})
+			queryParams := ibclient.NewQueryParams(false, map[string]string{defaultNameName: *obj.Name, "ipv4addr": *obj.Ipv4Addr})
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			duration := time.Since(startTime)
 			metrics.TotalApiCalls.Inc()
@@ -793,7 +799,7 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		obj.Ttl = &ttl
 		obj.UseTtl = &p.config.UseTTL
 		if getObject {
-			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.Name})
+			queryParams := ibclient.NewQueryParams(false, map[string]string{defaultNameName: *obj.Name})
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			duration := time.Since(startTime)
 			metrics.TotalApiCalls.Inc()
@@ -817,7 +823,7 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		obj.Name = ep.DNSName
 		obj.Nameserver = &ep.Targets[0]
 		if getObject {
-			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": obj.Name})
+			queryParams := ibclient.NewQueryParams(false, map[string]string{defaultNameName: obj.Name})
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			duration := time.Since(startTime)
 			metrics.TotalApiCalls.Inc()
@@ -850,7 +856,7 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 		obj.UseTtl = &p.config.UseTTL
 		// TODO: Zone?
 		if getObject {
-			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.Name})
+			queryParams := ibclient.NewQueryParams(false, map[string]string{defaultNameName: *obj.Name})
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			duration := time.Since(startTime)
 			metrics.TotalApiCalls.Inc()

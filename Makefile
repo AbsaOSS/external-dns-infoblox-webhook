@@ -71,5 +71,5 @@ license:
 
 define golic
 	@go install github.com/AbsaOSS/golic@$(GOLIC_VERSION)
-	$(GOBIN)/golic inject $1
+	golic inject $1
 endef

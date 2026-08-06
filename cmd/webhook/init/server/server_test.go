@@ -1,3 +1,4 @@
+//nolint:goconst
 package server
 
 /*
@@ -59,8 +60,8 @@ func TestMain(m *testing.M) {
 
 	go func() {
 		srv := NewServer()
-		srv.StartHealth(configuration.Init())
-		srv.Start(configuration.Init(), mockProvider)
+		srv.StartHealth(configuration.Init([]string{}))
+		srv.Start(configuration.Init([]string{}), mockProvider)
 
 	}()
 

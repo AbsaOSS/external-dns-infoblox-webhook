@@ -3,7 +3,7 @@ module github.com/AbsaOSS/external-dns-infoblox-webhook
 go 1.26.0
 
 require (
-	github.com/caarlos0/env/v11 v11.0.0
+	github.com/alecthomas/kong v1.16.0
 	github.com/infobloxopen/infoblox-go-client/v2 v2.10.0
 	github.com/miekg/dns v1.1.59
 	github.com/prometheus/client_golang v1.19.1

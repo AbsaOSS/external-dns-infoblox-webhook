@@ -25,15 +25,15 @@ import (
 
 	"github.com/AbsaOSS/external-dns-infoblox-webhook/cmd/webhook/init/configuration"
 	"github.com/AbsaOSS/external-dns-infoblox-webhook/internal/infoblox"
-	"github.com/caarlos0/env/v11"
+
+	"github.com/alecthomas/kong"
+	log "github.com/sirupsen/logrus"
 	"sigs.k8s.io/external-dns/endpoint"
 	"sigs.k8s.io/external-dns/provider"
-
-	log "github.com/sirupsen/logrus"
 )
 
 // nolint: revive
-func Init(config configuration.Config) (provider.Provider, error) {
+func Init(config configuration.Config, args []string) (provider.Provider, error) {
 	var domainFilter endpoint.DomainFilter
 	createMsg := "Creating infoblox provider with "
 
@@ -62,12 +62,25 @@ func Init(config configuration.Config) (provider.Provider, error) {
 	}
 	log.Info(createMsg)
 
-	infobloxConfig := infoblox.StartupConfig{}
-	if err := env.Parse(&infobloxConfig); err != nil {
-		return nil, fmt.Errorf("reading configuration failed: %v", err)
+	infobloxConfig, err := getInfobloxStartupConfig(args)
+	if err != nil {
+		return nil, err
 	}
 	infobloxConfig.FQDNRegEx = config.RegexDomainFilter
 	infobloxConfig.NameRegEx = config.RegexNameFilter
 
-	return infoblox.NewInfobloxProvider(&infobloxConfig, domainFilter)
+	return infoblox.NewInfobloxProvider(infobloxConfig, domainFilter)
+}
+
+func getInfobloxStartupConfig(args []string) (*infoblox.StartupConfig, error) {
+	infobloxConfig := &infoblox.StartupConfig{}
+	parser, err := kong.New(infobloxConfig)
+	if err != nil {
+		return nil, fmt.Errorf("error reading configuration from environment: %v", err)
+	}
+	_, err = parser.Parse(args)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing configuration from environment: %v", err)
+	}
+	return infobloxConfig, nil
 }
