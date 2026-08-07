@@ -39,7 +39,7 @@ type testCase struct {
 	name                      string
 	returnRecords             []*endpoint.Endpoint
 	returnAdjustedEndpoints   []*endpoint.Endpoint
-	returnDomainFilter        endpoint.DomainFilter
+	returnDomainFilter        *endpoint.DomainFilter
 	hasError                  error
 	method                    string
 	path                      string
@@ -341,7 +341,7 @@ func TestNegotiate(t *testing.T) {
 			expectedResponseHeaders: map[string]string{
 				"Content-Type": "application/external.dns.webhook+json;version=1",
 			},
-			expectedBody: "{}",
+			expectedBody: "null",
 		},
 	}
 
@@ -423,6 +423,6 @@ func (d *MockProvider) AdjustEndpoints(endpoints []*endpoint.Endpoint) ([]*endpo
 	return d.testCase.returnAdjustedEndpoints, nil
 }
 
-func (d *MockProvider) GetDomainFilter() endpoint.DomainFilter {
+func (d *MockProvider) GetDomainFilter() endpoint.DomainFilterInterface {
 	return d.testCase.returnDomainFilter
 }

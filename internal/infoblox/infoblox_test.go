@@ -676,7 +676,7 @@ func createMockInfobloxObject(name, recordType, value string) ibclient.IBObject 
 }
 
 // nolint: unparam
-func newInfobloxProvider(domainFilter endpoint.DomainFilter, zoneIDFilter provider.ZoneIDFilter, view string, dryRun bool, createPTR bool, client ibclient.IBConnector) *Provider {
+func newInfobloxProvider(domainFilter *endpoint.DomainFilter, _ provider.ZoneIDFilter, view string, dryRun bool, createPTR bool, client ibclient.IBConnector) *Provider {
 	return &Provider{
 		client:       client,
 		domainFilter: domainFilter,

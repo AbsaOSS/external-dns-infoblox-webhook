@@ -34,7 +34,7 @@ import (
 
 // nolint: revive
 func Init(config configuration.Config, args []string) (provider.Provider, error) {
-	var domainFilter endpoint.DomainFilter
+	var domainFilter *endpoint.DomainFilter
 	createMsg := "Creating infoblox provider with "
 
 	if config.RegexDomainFilter != "" {

@@ -56,7 +56,7 @@ func isNotFoundError(err error) bool {
 type Provider struct {
 	provider.BaseProvider
 	client       ibclient.IBConnector
-	domainFilter endpoint.DomainFilter
+	domainFilter *endpoint.DomainFilter
 	config       *StartupConfig
 }
 
@@ -135,7 +135,7 @@ func (mrb *ExtendedRequestBuilder) BuildRequest(t ibclient.RequestType, obj ibcl
 }
 
 // NewInfobloxProvider creates a new Infoblox provider.
-func NewInfobloxProvider(cfg *StartupConfig, domainFilter endpoint.DomainFilter) (*Provider, error) {
+func NewInfobloxProvider(cfg *StartupConfig, domainFilter *endpoint.DomainFilter) (*Provider, error) {
 	hostCfg := ibclient.HostConfig{
 		Host:    cfg.Host,
 		Port:    strconv.Itoa(cfg.Port),
