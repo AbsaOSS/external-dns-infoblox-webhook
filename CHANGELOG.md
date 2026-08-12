@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.8.0](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.7.2...v1.8.0) (2026-08-12)
+
+
+### Features
+
+* replace caarlos0/env by alecthomas/kong, allow arguments as configuration ([#77](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/77)) ([ffc4444](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/ffc4444b8fae769d51d19b527e47a8faeb3eadbc))
+
+
+### Bug Fixes
+
+* bump dependencies ([#78](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/78)) ([2f02eed](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/2f02eed6066c9f960566398b3793297e4d8274ad))
+
 ## [1.7.2](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.7.1...v1.7.2) (2026-07-21)
 
 
