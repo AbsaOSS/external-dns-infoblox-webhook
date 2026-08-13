@@ -189,103 +189,29 @@ func NewInfobloxProvider(cfg *StartupConfig, domainFilter *endpoint.DomainFilter
 
 // Records gets the current records.
 func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, err error) {
-	zones, err := p.zones()
-	if err != nil {
-		return nil, fmt.Errorf("could not fetch zones: %w", err)
-	}
 	extAttrs, err := deserializeEAs(p.config.ExtAttrsJSON)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, zone := range zones {
-		log.Debugf("fetch records from zone '%s'", zone.Fqdn)
-		searchParams := map[string]string{defaultZoneName: zone.Fqdn, defaultViewName: p.config.View}
-		var resA []ibclient.RecordA
-		objA := ibclient.NewEmptyRecordA()
-		objA.View = p.config.View
-		objA.Ea = extAttrs
-		objA.Zone = zone.Fqdn
-		err = PagingGetObject(p.client, objA, "", searchParams, &resA)
-		if err != nil && !isNotFoundError(err) {
-			metrics.FailedApiCallsTotal.Inc()
-			return nil, fmt.Errorf("could not fetch A records from zone '%s': %w", zone.Fqdn, err)
-		}
-		endpointsA := ToAResponseMap(resA).ToEndpoints()
-		endpoints = append(endpoints, endpointsA...)
-
-		// Include Host records since they should be treated synonymously with A records
-		var resH []ibclient.HostRecord
-		objH := ibclient.NewEmptyHostRecord()
-		objH.View = &p.config.View
-		objH.Ea = extAttrs
-		objH.Zone = zone.Fqdn
-		err = PagingGetObject(p.client, objH, "", searchParams, &resH)
-		if err != nil && !isNotFoundError(err) {
-			metrics.FailedApiCallsTotal.Inc()
-			return nil, fmt.Errorf("could not fetch host records from zone '%s': %w", zone.Fqdn, err)
-		}
-		endpointsHost := ToHostResponseMap(resH).ToEndpoints()
-		endpoints = append(endpoints, endpointsHost...)
-
-		var resC []ibclient.RecordCNAME
-		objC := ibclient.NewEmptyRecordCNAME()
-		objC.View = &p.config.View
-		objC.Ea = extAttrs
-		objC.Zone = zone.Fqdn
-		err = PagingGetObject(p.client, objC, "", searchParams, &resC)
-		if err != nil && !isNotFoundError(err) {
-			metrics.FailedApiCallsTotal.Inc()
-			return nil, fmt.Errorf("could not fetch CNAME records from zone '%s': %w", zone.Fqdn, err)
-		}
-		endpointsCNAME := ToCNAMEResponseMap(resC).ToEndpoints()
-		endpoints = append(endpoints, endpointsCNAME...)
-
-		var resT []ibclient.RecordTXT
-		objT := ibclient.NewEmptyRecordTXT()
-		objT.View = &p.config.View
-		objT.Ea = extAttrs
-		objT.Zone = zone.Fqdn
-		err = PagingGetObject(p.client, objT, "", searchParams, &resT)
-		if err != nil && !isNotFoundError(err) {
-			metrics.FailedApiCallsTotal.Inc()
-			return nil, fmt.Errorf("could not fetch TXT records from zone '%s': %w", zone.Fqdn, err)
-		}
-		endpointsTXT := ToTXTResponseMap(resT).ToEndpoints()
-		endpoints = append(endpoints, endpointsTXT...)
-
-		var resNS []ibclient.RecordNS
-		objNS := ibclient.NewEmptyRecordNS()
-		objNS.View = p.config.View
-		objNS.Zone = zone.Fqdn
-		err = PagingGetObject(p.client, objNS, "", searchParams, &resNS)
-		if err != nil && !isNotFoundError(err) {
-			metrics.FailedApiCallsTotal.Inc()
-			return nil, fmt.Errorf("could not fetch NS records from zone '%s': %w", zone.Fqdn, err)
-		}
-		endpointsNS := ToNSResponseMap(resNS).ToEndpoints()
-		endpoints = append(endpoints, endpointsNS...)
-
-		if p.config.CreatePTR {
-			arpaZone, err := rfc2317.CidrToInAddr(zone.Fqdn)
-			if err == nil {
-				var resP []ibclient.RecordPTR
-				objP := ibclient.NewEmptyRecordPTR()
-				objP.View = p.config.View
-				objP.Ea = extAttrs
-				objP.Zone = arpaZone
-				err = PagingGetObject(p.client, objP, "", map[string]string{defaultZoneName: arpaZone, defaultViewName: p.config.View}, &resP)
-				if err != nil && !isNotFoundError(err) {
-					metrics.FailedApiCallsTotal.Inc()
-					return nil, fmt.Errorf("could not fetch PTR records from zone '%s': %w", zone.Fqdn, err)
-				}
-				endpointsPTR := ToPTRResponseMap(resP).ToEndpoints()
-				endpoints = append(endpoints, endpointsPTR...)
-			} else {
-				log.Debugf("Could not fetch PTR records from zone '%s': %s", zone.Fqdn, err)
-			}
+	var zones []ibclient.ZoneAuth
+	if p.config.CreatePTR || !p.useGlobalForwardRecordQueries() {
+		zones, err = p.zones()
+		if err != nil {
+			return nil, fmt.Errorf("could not fetch zones: %w", err)
 		}
 	}
+
+	endpoints, err = p.fetchForwardRecordEndpoints(extAttrs, zones)
+	if err != nil {
+		return nil, err
+	}
+
+	ptrEndpoints, err := p.fetchPTRRecordEndpoints(extAttrs, zones)
+	if err != nil {
+		return nil, err
+	}
+	endpoints = append(endpoints, ptrEndpoints...)
 
 	if p.config.CreatePTR {
 		// save all ptr records into map for a quick look up
@@ -318,6 +244,135 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 	}
 
 	log.Debugf("fetched %d records from infoblox", len(endpoints))
+	return endpoints, nil
+}
+
+func (p *Provider) useGlobalForwardRecordQueries() bool {
+	return p.config.NameRegEx != "" && p.config.View != ""
+}
+
+func (p *Provider) fetchForwardRecordEndpoints(extAttrs map[string]interface{}, zones []ibclient.ZoneAuth) ([]*endpoint.Endpoint, error) {
+	if p.useGlobalForwardRecordQueries() {
+		log.Debugf("fetch forward records using global regex scope for view '%s'", p.config.View)
+		return p.fetchForwardRecordEndpointsForScope(extAttrs, "")
+	}
+
+	var endpoints []*endpoint.Endpoint
+	for _, zone := range zones {
+		log.Debugf("fetch records from zone '%s'", zone.Fqdn)
+		zoneEndpoints, err := p.fetchForwardRecordEndpointsForScope(extAttrs, zone.Fqdn)
+		if err != nil {
+			return nil, err
+		}
+		endpoints = append(endpoints, zoneEndpoints...)
+	}
+
+	return endpoints, nil
+}
+
+func (p *Provider) fetchForwardRecordEndpointsForScope(extAttrs map[string]interface{}, zone string) ([]*endpoint.Endpoint, error) {
+	searchParams := map[string]string{}
+	scopeName := defaultViewName
+	if p.config.View != "" {
+		searchParams[defaultViewName] = p.config.View
+		scopeName = fmt.Sprintf("view '%s'", p.config.View)
+	}
+	if zone != "" {
+		searchParams[defaultZoneName] = zone
+		scopeName = fmt.Sprintf("zone '%s'", zone)
+	}
+
+	var endpoints []*endpoint.Endpoint
+
+	var resA []ibclient.RecordA
+	objA := ibclient.NewEmptyRecordA()
+	objA.View = p.config.View
+	objA.Ea = extAttrs
+	objA.Zone = zone
+	err := PagingGetObject(p.client, objA, "", searchParams, &resA)
+	if err != nil && !isNotFoundError(err) {
+		metrics.FailedApiCallsTotal.Inc()
+		return nil, fmt.Errorf("could not fetch A records from %s: %w", scopeName, err)
+	}
+	endpoints = append(endpoints, ToAResponseMap(resA).ToEndpoints()...)
+
+	// Include Host records since they should be treated synonymously with A records
+	var resH []ibclient.HostRecord
+	objH := ibclient.NewEmptyHostRecord()
+	objH.View = &p.config.View
+	objH.Ea = extAttrs
+	objH.Zone = zone
+	err = PagingGetObject(p.client, objH, "", searchParams, &resH)
+	if err != nil && !isNotFoundError(err) {
+		metrics.FailedApiCallsTotal.Inc()
+		return nil, fmt.Errorf("could not fetch host records from %s: %w", scopeName, err)
+	}
+	endpoints = append(endpoints, ToHostResponseMap(resH).ToEndpoints()...)
+
+	var resC []ibclient.RecordCNAME
+	objC := ibclient.NewEmptyRecordCNAME()
+	objC.View = &p.config.View
+	objC.Ea = extAttrs
+	objC.Zone = zone
+	err = PagingGetObject(p.client, objC, "", searchParams, &resC)
+	if err != nil && !isNotFoundError(err) {
+		metrics.FailedApiCallsTotal.Inc()
+		return nil, fmt.Errorf("could not fetch CNAME records from %s: %w", scopeName, err)
+	}
+	endpoints = append(endpoints, ToCNAMEResponseMap(resC).ToEndpoints()...)
+
+	var resT []ibclient.RecordTXT
+	objT := ibclient.NewEmptyRecordTXT()
+	objT.View = &p.config.View
+	objT.Ea = extAttrs
+	objT.Zone = zone
+	err = PagingGetObject(p.client, objT, "", searchParams, &resT)
+	if err != nil && !isNotFoundError(err) {
+		metrics.FailedApiCallsTotal.Inc()
+		return nil, fmt.Errorf("could not fetch TXT records from %s: %w", scopeName, err)
+	}
+	endpoints = append(endpoints, ToTXTResponseMap(resT).ToEndpoints()...)
+
+	var resNS []ibclient.RecordNS
+	objNS := ibclient.NewEmptyRecordNS()
+	objNS.View = p.config.View
+	objNS.Zone = zone
+	err = PagingGetObject(p.client, objNS, "", searchParams, &resNS)
+	if err != nil && !isNotFoundError(err) {
+		metrics.FailedApiCallsTotal.Inc()
+		return nil, fmt.Errorf("could not fetch NS records from %s: %w", scopeName, err)
+	}
+	endpointsNS := ToNSResponseMap(resNS).ToEndpoints()
+	endpoints = append(endpoints, endpointsNS...)
+
+	return endpoints, nil
+}
+
+func (p *Provider) fetchPTRRecordEndpoints(extAttrs map[string]interface{}, zones []ibclient.ZoneAuth) ([]*endpoint.Endpoint, error) {
+	if !p.config.CreatePTR {
+		return nil, nil
+	}
+
+	var endpoints []*endpoint.Endpoint
+	for _, zone := range zones {
+		arpaZone, err := rfc2317.CidrToInAddr(zone.Fqdn)
+		if err != nil {
+			log.Debugf("Could not fetch PTR records from zone '%s': %s", zone.Fqdn, err)
+			continue
+		}
+
+		var resP []ibclient.RecordPTR
+		objP := ibclient.NewEmptyRecordPTR()
+		objP.View = p.config.View
+		objP.Ea = extAttrs
+		objP.Zone = arpaZone
+		err = PagingGetObject(p.client, objP, "", map[string]string{defaultZoneName: arpaZone, defaultViewName: p.config.View}, &resP) // nolint: goconst
+		if err != nil && !isNotFoundError(err) {
+			metrics.FailedApiCallsTotal.Inc()
+			return nil, fmt.Errorf("could not fetch PTR records from zone '%s': %w", zone.Fqdn, err)
+		}
+		endpoints = append(endpoints, ToPTRResponseMap(resP).ToEndpoints()...)
+	}
 	return endpoints, nil
 }
 
@@ -421,7 +476,7 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 			case infobloxCreate:
 				_, actionErr = p.client.CreateObject(record.obj)
 				duration := time.Since(startTime)
-				metrics.ApiCallLatency.WithLabelValues("GetObject").Observe(duration.Seconds())
+				metrics.ApiCallLatency.WithLabelValues("CreateObject").Observe(duration.Seconds())
 				metrics.TotalApiCalls.Inc()
 			case infobloxDelete:
 				_, actionErr = p.client.DeleteObject(refId)
@@ -879,7 +934,7 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 }
 
 func (p *Provider) buildRecord(change *infobloxChange) (*infobloxRecordSet, error) {
-	rs, err := p.recordSet(change.Endpoint, !(change.Action == infobloxCreate)) //nolint: staticcheck
+	rs, err := p.recordSet(change.Endpoint, change.Action != infobloxCreate)
 	if err != nil {
 		return nil, err
 	}
