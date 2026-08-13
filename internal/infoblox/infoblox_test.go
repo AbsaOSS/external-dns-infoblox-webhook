@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -31,7 +32,6 @@ import (
 	"testing"
 
 	ibclient "github.com/infobloxopen/infoblox-go-client/v2"
-	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 
 	"sigs.k8s.io/external-dns/endpoint"
@@ -141,10 +141,11 @@ func (client *mockIBConnector) countGetObjectRequests(obj string) int {
 }
 
 func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, err error) {
+	var newEndpoints []*endpoint.Endpoint
 	switch obj.ObjectType() {
 	case recordA:
-		client.createdEndpoints = append(
-			client.createdEndpoints,
+		newEndpoints = append(
+			newEndpoints,
 			endpoint.NewEndpoint(
 				*obj.(*ibclient.RecordA).Name,
 				endpoint.RecordTypeA,
@@ -154,8 +155,8 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.RecordA).Name)), *obj.(*ibclient.RecordA).Name)
 		obj.(*ibclient.RecordA).Ref = ref
 	case recordCname:
-		client.createdEndpoints = append(
-			client.createdEndpoints,
+		newEndpoints = append(
+			newEndpoints,
 			endpoint.NewEndpoint(
 				*obj.(*ibclient.RecordCNAME).Name,
 				endpoint.RecordTypeCNAME,
@@ -165,8 +166,8 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.RecordCNAME).Name)), *obj.(*ibclient.RecordCNAME).Name)
 		obj.(*ibclient.RecordCNAME).Ref = ref
 	case recordNs:
-		client.createdEndpoints = append(
-			client.createdEndpoints,
+		newEndpoints = append(
+			newEndpoints,
 			endpoint.NewEndpoint(
 				obj.(*ibclient.RecordNS).Name,
 				endpoint.RecordTypeNS,
@@ -177,8 +178,8 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 		obj.(*ibclient.RecordNS).Ref = ref
 	case recordHost:
 		for _, i := range obj.(*ibclient.HostRecord).Ipv4Addrs {
-			client.createdEndpoints = append(
-				client.createdEndpoints,
+			newEndpoints = append(
+				newEndpoints,
 				endpoint.NewEndpoint(
 					*obj.(*ibclient.HostRecord).Name,
 					endpoint.RecordTypeA,
@@ -189,8 +190,8 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.HostRecord).Name)), *obj.(*ibclient.HostRecord).Name)
 		obj.(*ibclient.HostRecord).Ref = ref
 	case recordTxt:
-		client.createdEndpoints = append(
-			client.createdEndpoints,
+		newEndpoints = append(
+			newEndpoints,
 			endpoint.NewEndpoint(
 				*obj.(*ibclient.RecordTXT).Name,
 				endpoint.RecordTypeTXT,
@@ -200,8 +201,8 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 		obj.(*ibclient.RecordTXT).Ref = ref
 		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.RecordTXT).Name)), *obj.(*ibclient.RecordTXT).Name)
 	case recordPtr:
-		client.createdEndpoints = append(
-			client.createdEndpoints,
+		newEndpoints = append(
+			newEndpoints,
 			endpoint.NewEndpoint(
 				*obj.(*ibclient.RecordPTR).PtrdName,
 				endpoint.RecordTypePTR,
@@ -209,17 +210,90 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 			),
 		)
 		obj.(*ibclient.RecordPTR).Ref = ref
-		reverseAddr, err := dns.ReverseAddr(*obj.(*ibclient.RecordPTR).Ipv4Addr)
 		if err != nil {
 			return ref, fmt.Errorf("unable to create reverse addr from %s", *obj.(*ibclient.RecordPTR).Ipv4Addr)
 		}
-		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.RecordPTR).PtrdName)), reverseAddr)
+		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.RecordPTR).PtrdName)), *obj.(*ibclient.RecordPTR).PtrdName)
 	}
+	has, err := client.hasObject(obj, ref)
+	if err != nil {
+		return ref, err
+	}
+	if has {
+		return ref, errors.New("object already exists")
+	}
+	client.createdEndpoints = append(client.createdEndpoints, newEndpoints...)
+
 	*client.mockInfobloxObjects = append(
 		*client.mockInfobloxObjects,
 		obj,
 	)
 	return ref, nil
+}
+
+func (client *mockIBConnector) hasObject(obj ibclient.IBObject, ref string) (result bool, err error) {
+	result = false
+
+	switch obj.ObjectType() {
+	case recordA:
+		var res []ibclient.RecordA
+		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
+		if err != nil || len(res) == 0 {
+			if isNotFoundError(err) {
+				return false, nil
+			}
+			return result, err
+		}
+	case recordCname:
+		var res []ibclient.RecordCNAME
+		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
+		if err != nil || len(res) == 0 {
+			if isNotFoundError(err) {
+				return false, nil
+			}
+			return result, err
+		}
+	case recordHost:
+		var res []ibclient.HostRecord
+		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
+		if err != nil || len(res) == 0 {
+			if isNotFoundError(err) {
+				return false, nil
+			}
+			return result, err
+		}
+	case recordTxt:
+		var res []ibclient.RecordTXT
+		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
+		if err != nil || len(res) == 0 {
+			if isNotFoundError(err) {
+				return false, nil
+			}
+			return result, err
+		}
+	case recordPtr:
+		var res []ibclient.RecordPTR
+		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
+		if err != nil || len(res) == 0 {
+			if isNotFoundError(err) {
+				return false, nil
+			}
+			return result, err
+		}
+	case recordNs:
+		var res []ibclient.RecordNS
+		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
+		if err != nil || len(res) == 0 {
+			if isNotFoundError(err) {
+				return false, nil
+			}
+			return result, err
+		}
+	case "zone_auth":
+		return true, nil
+	}
+
+	return true, nil
 }
 
 // nolint: gocyclo
@@ -284,6 +358,9 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 		if isPagingType {
 			res.(*pagingResponseStruct[ibclient.RecordA]).Result = result
 		} else {
+			if len(result) == 0 {
+				return ibclient.NewNotFoundError("not found")
+			}
 			*res.(*[]ibclient.RecordA) = result
 		}
 	case recordCname:
@@ -316,6 +393,9 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 		if isPagingType {
 			res.(*pagingResponseStruct[ibclient.RecordCNAME]).Result = result
 		} else {
+			if len(result) == 0 {
+				return ibclient.NewNotFoundError("not found")
+			}
 			*res.(*[]ibclient.RecordCNAME) = result
 		}
 	case recordNs:
@@ -344,6 +424,9 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 		if isPagingType {
 			res.(*pagingResponseStruct[ibclient.RecordNS]).Result = result
 		} else {
+			if len(result) == 0 {
+				return ibclient.NewNotFoundError("not found")
+			}
 			*res.(*[]ibclient.RecordNS) = result
 		}
 	case recordHost:
@@ -376,6 +459,9 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 		if isPagingType {
 			res.(*pagingResponseStruct[ibclient.HostRecord]).Result = result
 		} else {
+			if len(result) == 0 {
+				return ibclient.NewNotFoundError("not found")
+			}
 			*res.(*[]ibclient.HostRecord) = result
 		}
 	case recordTxt:
@@ -408,6 +494,9 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 		if isPagingType {
 			res.(*pagingResponseStruct[ibclient.RecordTXT]).Result = result
 		} else {
+			if len(result) == 0 {
+				return ibclient.NewNotFoundError("not found")
+			}
 			*res.(*[]ibclient.RecordTXT) = result
 		}
 	case recordPtr:
@@ -1090,6 +1179,79 @@ func TestInfobloxApplyChanges(t *testing.T) {
 		endpoint.NewEndpoint("deletedcname.example.com", endpoint.RecordTypeCNAME, ""),
 		endpoint.NewEndpoint("deletedzone.example.com", endpoint.RecordTypeNS, ""),
 	})
+
+	validateEndpoints(t, client.updatedEndpoints, []*endpoint.Endpoint{})
+}
+
+func TestInfobloxRecordsReverseCreatedWhenMissing(t *testing.T) {
+	client := mockIBConnector{
+		mockInfobloxZones: &[]ibclient.ZoneAuth{
+			createMockInfobloxZone("example.com"),
+			createMockInfobloxZone("1.2.3.0/24"),
+		},
+		mockInfobloxObjects: &[]ibclient.IBObject{
+			createMockInfobloxObjectWithZone("ptrmissing.example.com", endpoint.RecordTypeA, "1.2.3.9", "example.com"),
+		},
+	}
+
+	providerCfg := newInfobloxProvider(endpoint.NewDomainFilter([]string{"example.com", "1.2.3.0/24"}), provider.NewZoneIDFilter([]string{""}), "", false, true, &client)
+
+	changes := &plan.Changes{
+		Create: []*endpoint.Endpoint{},
+		UpdateOld: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypeA, "1.2.3.9"),
+		},
+		UpdateNew: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypeA, "1.2.3.9"),
+		},
+		Delete: []*endpoint.Endpoint{},
+	}
+
+	if err := providerCfg.ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatal(err)
+	}
+
+	validateEndpoints(t, client.createdEndpoints, []*endpoint.Endpoint{
+		endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypePTR, "1.2.3.9"),
+	})
+
+	validateEndpoints(t, client.deletedEndpoints, []*endpoint.Endpoint{})
+
+	validateEndpoints(t, client.updatedEndpoints, []*endpoint.Endpoint{
+		endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypeA, "1.2.3.9"),
+	})
+}
+func TestInfobloxApplyChangesReverseWithExistingRecords(t *testing.T) {
+	client := mockIBConnector{
+		mockInfobloxZones: &[]ibclient.ZoneAuth{
+			createMockInfobloxZone("example.com"),
+			createMockInfobloxZone("1.2.3.0/24"),
+		},
+		mockInfobloxObjects: &[]ibclient.IBObject{
+			createMockInfobloxObjectWithZone("ptrexists.example.com", endpoint.RecordTypePTR, "1.2.3.9", "1.2.3.0/24"),
+		},
+	}
+
+	providerCfg := newInfobloxProvider(endpoint.NewDomainFilter([]string{"example.com", "1.2.3.0/24"}), provider.NewZoneIDFilter([]string{""}), "", false, true, &client)
+
+	changes := &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("ptrexists.example.com", endpoint.RecordTypeA, "1.2.3.9"),
+		},
+		UpdateOld: []*endpoint.Endpoint{},
+		UpdateNew: []*endpoint.Endpoint{},
+		Delete:    []*endpoint.Endpoint{},
+	}
+
+	if err := providerCfg.ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatal(err)
+	}
+
+	validateEndpoints(t, client.createdEndpoints, []*endpoint.Endpoint{
+		endpoint.NewEndpoint("ptrexists.example.com", endpoint.RecordTypeA, "1.2.3.9"),
+	})
+
+	validateEndpoints(t, client.deletedEndpoints, []*endpoint.Endpoint{})
 
 	validateEndpoints(t, client.updatedEndpoints, []*endpoint.Endpoint{})
 }
