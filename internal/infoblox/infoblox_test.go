@@ -82,6 +82,16 @@ func (req *getObjectRequest) ExpectNotRequestURLQueryParam(t *testing.T, name st
 	return req
 }
 
+func requestMatchesURLRegex(req *getObjectRequest, queryParam string, value string) bool {
+	pattern := req.url.Query().Get(queryParam)
+	if pattern == "" {
+		return false
+	}
+
+	matched, err := regexp.MatchString(pattern, value)
+	return err == nil && matched
+}
+
 // nolint: unparam
 func (client *mockIBConnector) verifyGetObjectRequest(t *testing.T, obj string, ref string, query *map[string]string) *getObjectRequest {
 	qp := ""
@@ -117,6 +127,17 @@ func (client *mockIBConnector) verifyNoMoreGetObjectRequests(t *testing.T) {
 
 		t.Errorf("Unverified GetObject Requests: %v", unverified)
 	}
+}
+
+func (client *mockIBConnector) countGetObjectRequests(obj string) int {
+	count := 0
+	for _, req := range client.getObjectRequests {
+		if req.obj == obj {
+			count++
+		}
+	}
+
+	return count
 }
 
 func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, err error) {
@@ -249,6 +270,10 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 					continue
 				}
 				if !strings.Contains(req.queryParams, fmt.Sprintf("ipv4addr:%s name:%s", AsString(object.(*ibclient.RecordA).Ipv4Addr), AsString(object.(*ibclient.RecordA).Name))) {
+					if requestMatchesURLRegex(&req, "name~", AsString(object.(*ibclient.RecordA).Name)) {
+						result = append(result, *object.(*ibclient.RecordA))
+						continue
+					}
 					if !strings.Contains(req.queryParams, fmt.Sprintf("zone:%s", object.(*ibclient.RecordA).Zone)) {
 						continue
 					}
@@ -277,6 +302,10 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 					continue
 				}
 				if !strings.Contains(req.queryParams, fmt.Sprintf("name:%s", AsString(object.(*ibclient.RecordCNAME).Name))) {
+					if requestMatchesURLRegex(&req, "name~", AsString(object.(*ibclient.RecordCNAME).Name)) {
+						result = append(result, *object.(*ibclient.RecordCNAME))
+						continue
+					}
 					if !strings.Contains(req.queryParams, fmt.Sprintf("zone:%s", object.(*ibclient.RecordCNAME).Zone)) {
 						continue
 					}
@@ -333,6 +362,10 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 					continue
 				}
 				if !strings.Contains(req.queryParams, fmt.Sprintf("ipv4addrs:%s name:%s", AsString(object.(*ibclient.HostRecord).Ipv4Addrs[0].Ipv4Addr), AsString(object.(*ibclient.HostRecord).Name))) {
+					if requestMatchesURLRegex(&req, "name~", AsString(object.(*ibclient.HostRecord).Name)) {
+						result = append(result, *object.(*ibclient.HostRecord))
+						continue
+					}
 					if !strings.Contains(req.queryParams, fmt.Sprintf("zone:%s", object.(*ibclient.HostRecord).Zone)) {
 						continue
 					}
@@ -361,6 +394,10 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 					continue
 				}
 				if !strings.Contains(req.queryParams, fmt.Sprintf("text:%s name:%s", AsString(object.(*ibclient.RecordTXT).Text), AsString(object.(*ibclient.RecordTXT).Name))) {
+					if requestMatchesURLRegex(&req, "name~", AsString(object.(*ibclient.RecordTXT).Name)) {
+						result = append(result, *object.(*ibclient.RecordTXT))
+						continue
+					}
 					if !strings.Contains(req.queryParams, fmt.Sprintf("zone:%s", object.(*ibclient.RecordTXT).Zone)) {
 						continue
 					}
@@ -376,7 +413,7 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 	case recordPtr:
 		var result []ibclient.RecordPTR
 		for _, object := range *client.mockInfobloxObjects {
-			if object.ObjectType() == "record:ptr" {
+			if object.ObjectType() == recordPtr {
 				if ref == object.(*ibclient.RecordPTR).Ref {
 					result = append(result, *object.(*ibclient.RecordPTR))
 				}
@@ -388,7 +425,7 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 					AsString(obj.(*ibclient.RecordPTR).PtrdName) != AsString(object.(*ibclient.RecordPTR).PtrdName) {
 					continue
 				}
-				if !strings.Contains(req.queryParams, fmt.Sprintf("name:%s", AsString(object.(*ibclient.RecordPTR).Name))) {
+				if !strings.Contains(req.queryParams, fmt.Sprintf("ipv4addr:%s ptrdname:%s", AsString(object.(*ibclient.RecordPTR).Ipv4Addr), AsString(object.(*ibclient.RecordPTR).PtrdName))) {
 					if !strings.Contains(req.queryParams, fmt.Sprintf("zone:%s", object.(*ibclient.RecordPTR).Zone)) {
 						continue
 					}
@@ -399,13 +436,26 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 		if isPagingType {
 			res.(*pagingResponseStruct[ibclient.RecordPTR]).Result = result
 		} else {
+			if len(result) == 0 {
+				return ibclient.NewNotFoundError("not found")
+			}
 			*res.(*[]ibclient.RecordPTR) = result
 		}
 	case "zone_auth":
+		zones := *client.mockInfobloxZones
+		if req.url.Query().Get("fqdn~") != "" {
+			filteredZones := make([]ibclient.ZoneAuth, 0, len(zones))
+			for _, zone := range zones {
+				if requestMatchesURLRegex(&req, "fqdn~", zone.Fqdn) {
+					filteredZones = append(filteredZones, zone)
+				}
+			}
+			zones = filteredZones
+		}
 		if isPagingType {
-			res.(*pagingResponseStruct[ibclient.ZoneAuth]).Result = *client.mockInfobloxZones
+			res.(*pagingResponseStruct[ibclient.ZoneAuth]).Result = zones
 		} else {
-			*res.(*[]ibclient.ZoneAuth) = *client.mockInfobloxZones
+			*res.(*[]ibclient.ZoneAuth) = zones
 		}
 	}
 	return
@@ -744,36 +794,36 @@ func TestInfobloxRecords(t *testing.T) {
 		"_max_results":      "1000",
 		"_paging":           "1",
 		"_return_as_object": "1",
-		"view":              "",
 		"zone":              "example.com"}).
+		ExpectNotRequestURLQueryParam(t, "view").
 		ExpectRequestURLQueryParam(t, "zone", "example.com")
 	client.verifyGetObjectRequest(t, "record:host", "", &map[string]string{
 		"_max_results":      "1000",
 		"_paging":           "1",
 		"_return_as_object": "1",
-		"view":              "",
 		"zone":              "example.com"}).
+		ExpectNotRequestURLQueryParam(t, "view").
 		ExpectRequestURLQueryParam(t, "zone", "example.com")
 	client.verifyGetObjectRequest(t, "record:cname", "", &map[string]string{
 		"_max_results":      "1000",
 		"_paging":           "1",
 		"_return_as_object": "1",
-		"view":              "",
 		"zone":              "example.com"}).
+		ExpectNotRequestURLQueryParam(t, "view").
 		ExpectRequestURLQueryParam(t, "zone", "example.com")
 	client.verifyGetObjectRequest(t, "record:ns", "", &map[string]string{
 		"_max_results":      "1000",
 		"_paging":           "1",
 		"_return_as_object": "1",
-		"view":              "",
 		"zone":              "example.com"}).
+		ExpectNotRequestURLQueryParam(t, "view").
 		ExpectRequestURLQueryParam(t, "zone", "example.com")
 	client.verifyGetObjectRequest(t, "record:txt", "", &map[string]string{
 		"_max_results":      "1000",
 		"_paging":           "1",
 		"_return_as_object": "1",
-		"view":              "",
 		"zone":              "example.com"}).
+		ExpectNotRequestURLQueryParam(t, "view").
 		ExpectRequestURLQueryParam(t, "zone", "example.com")
 	client.verifyNoMoreGetObjectRequests(t)
 }
@@ -877,6 +927,82 @@ func TestInfobloxRecordsWithView(t *testing.T) {
 	client.verifyNoMoreGetObjectRequests(t)
 }
 
+func TestInfobloxRecordsWithNameRegexUsesGlobalQueries(t *testing.T) {
+	client := mockIBConnector{
+		mockInfobloxZones: &[]ibclient.ZoneAuth{
+			createMockInfobloxZone("foo.example.com"),
+			createMockInfobloxZone("bar.example.com"),
+		},
+		mockInfobloxObjects: &[]ibclient.IBObject{
+			createMockInfobloxObjectWithZone("cat.foo.example.com", endpoint.RecordTypeA, "123.123.123.122", "foo.example.com"),
+			createMockInfobloxObjectWithZone("dog.bar.example.com", endpoint.RecordTypeA, "123.123.123.123", "bar.example.com"),
+			createMockInfobloxObjectWithZone("ignored.other.example.com", endpoint.RecordTypeA, "123.123.123.124", "bar.example.com"),
+		},
+	}
+
+	providerCfg := newInfobloxProvider(endpoint.NewDomainFilter([]string{"foo.example.com", "bar.example.com"}), provider.NewZoneIDFilter([]string{""}), "Inside", true, false, &client)
+	providerCfg.config.NameRegEx = "^(cat\\.foo|dog\\.bar)\\.example\\.com$"
+	requestBuilder := NewExtendedRequestBuilder(0, "", providerCfg.config.NameRegEx)
+	requestBuilder.Init(
+		ibclient.HostConfig{Host: "localhost", Port: "8080", Version: "2.3.1"},
+		ibclient.AuthConfig{Username: "user", Password: "abcd"},
+	)
+	client.requestBuilder = *requestBuilder
+
+	actual, err := providerCfg.Records(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := []*endpoint.Endpoint{
+		endpoint.NewEndpoint("cat.foo.example.com", endpoint.RecordTypeA, "123.123.123.122"),
+		endpoint.NewEndpoint("dog.bar.example.com", endpoint.RecordTypeA, "123.123.123.123"),
+	}
+	validateEndpoints(t, actual, expected)
+
+	client.verifyGetObjectRequest(t, "record:a", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"view":              "Inside"}).
+		ExpectRequestURLQueryParam(t, "name~", "^(cat\\.foo|dog\\.bar)\\.example\\.com$").
+		ExpectRequestURLQueryParam(t, "view", "Inside").
+		ExpectNotRequestURLQueryParam(t, "zone")
+	client.verifyGetObjectRequest(t, "record:host", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"view":              "Inside"}).
+		ExpectRequestURLQueryParam(t, "name~", "^(cat\\.foo|dog\\.bar)\\.example\\.com$").
+		ExpectRequestURLQueryParam(t, "view", "Inside").
+		ExpectNotRequestURLQueryParam(t, "zone")
+	client.verifyGetObjectRequest(t, "record:cname", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"view":              "Inside"}).
+		ExpectRequestURLQueryParam(t, "name~", "^(cat\\.foo|dog\\.bar)\\.example\\.com$").
+		ExpectRequestURLQueryParam(t, "view", "Inside").
+		ExpectNotRequestURLQueryParam(t, "zone")
+	client.verifyGetObjectRequest(t, "record:txt", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"view":              "Inside"}).
+		ExpectRequestURLQueryParam(t, "name~", "^(cat\\.foo|dog\\.bar)\\.example\\.com$").
+		ExpectRequestURLQueryParam(t, "view", "Inside").
+		ExpectNotRequestURLQueryParam(t, "zone")
+	client.verifyGetObjectRequest(t, "record:ns", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"view":              "Inside"}).
+		ExpectRequestURLQueryParam(t, "name~", "^(cat\\.foo|dog\\.bar)\\.example\\.com$").
+		ExpectRequestURLQueryParam(t, "view", "Inside").
+		ExpectNotRequestURLQueryParam(t, "zone")
+	client.verifyNoMoreGetObjectRequests(t)
+}
+
 func TestInfobloxAdjustEndpoints(t *testing.T) {
 	client := mockIBConnector{
 		mockInfobloxZones: &[]ibclient.ZoneAuth{
@@ -931,6 +1057,7 @@ func TestInfobloxRecordsReverse(t *testing.T) {
 		endpoint.NewEndpoint("example2.com", endpoint.RecordTypePTR, "10.0.0.2"),
 	}
 	validateEndpoints(t, actual, expected)
+	assert.Equal(t, 1, client.countGetObjectRequests("zone_auth"))
 }
 
 func TestInfobloxApplyChanges(t *testing.T) {
