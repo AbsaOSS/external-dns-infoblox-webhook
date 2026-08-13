@@ -421,7 +421,7 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 			case infobloxCreate:
 				_, actionErr = p.client.CreateObject(record.obj)
 				duration := time.Since(startTime)
-				metrics.ApiCallLatency.WithLabelValues("GetObject").Observe(duration.Seconds())
+				metrics.ApiCallLatency.WithLabelValues("CreateObject").Observe(duration.Seconds())
 				metrics.TotalApiCalls.Inc()
 			case infobloxDelete:
 				_, actionErr = p.client.DeleteObject(refId)
@@ -438,7 +438,7 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 			}
 
 			if actionErr != nil {
-				errs = append(errs, actionErr)
+				log.Error(fmt.Errorf("could not perform action (%s): %w", change, actionErr))
 			}
 		}
 	}
@@ -666,6 +666,16 @@ func (p *Provider) ChangesByZone(zones []*ibclient.ZoneAuth, changeSets []*infob
 		changes[zone.Fqdn] = append(changes[zone.Fqdn], c)
 
 		if p.config.CreatePTR && c.Endpoint.RecordType == endpoint.RecordTypeA {
+			if p.domainFilter.IsConfigured() {
+				for _, filter := range p.domainFilter.Filters {
+					_, ipnet, err := net.ParseCIDR(filter)
+					if err == nil {
+						if !ipnet.Contains(net.ParseIP(c.Endpoint.Targets[0])) {
+							log.Warnf("Configured domain filters do not match zone for '%s'. Will likely not attempt to create PTR record.", c.Endpoint.Targets)
+						}
+					}
+				}
+			}
 			reverseZone := p.findReverseZone(zones, c.Endpoint.Targets[0])
 			if reverseZone == nil {
 				log.Debugf("Ignoring changes to '%s' because a suitable Infoblox DNS reverse zone was not found.", c.Endpoint.Targets)
@@ -673,7 +683,13 @@ func (p *Provider) ChangesByZone(zones []*ibclient.ZoneAuth, changeSets []*infob
 			}
 			copyEp := *c.Endpoint
 			copyEp.RecordType = endpoint.RecordTypePTR
-			changes[reverseZone.Fqdn] = append(changes[reverseZone.Fqdn], &infobloxChange{c.Action, &copyEp})
+			_, err := p.recordSet(&copyEp, c.Action != infobloxCreate)
+			if err != nil && c.Action == infobloxUpdate {
+				log.Warnf("Could not find PTR record to update for A record '%s' with targets '%s'. It will be created.", c.Endpoint.DNSName, c.Endpoint.Targets)
+				changes[reverseZone.Fqdn] = append(changes[reverseZone.Fqdn], &infobloxChange{infobloxCreate, &copyEp})
+			} else {
+				changes[reverseZone.Fqdn] = append(changes[reverseZone.Fqdn], &infobloxChange{c.Action, &copyEp})
+			}
 		}
 	}
 	return changes
@@ -775,9 +791,12 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			duration := time.Since(startTime)
 			metrics.TotalApiCalls.Inc()
-			if err != nil && !isNotFoundError(err) {
+			if err != nil {
 				metrics.FailedApiCallsTotal.Inc()
-				return
+				err = fmt.Errorf("could not fetch PTR record ['%s':'%s'] : %w", *obj.PtrdName, *obj.Ipv4Addr, err)
+				if !isNotFoundError(err) {
+					return
+				}
 			}
 			metrics.ApiCallLatency.WithLabelValues("GetObjectPTR").Observe(duration.Seconds())
 
@@ -803,9 +822,12 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			duration := time.Since(startTime)
 			metrics.TotalApiCalls.Inc()
-			if err != nil && !isNotFoundError(err) {
+			if err != nil {
 				metrics.FailedApiCallsTotal.Inc()
-				return
+				err = fmt.Errorf("could not fetch CNAME record ['%s'] : %w", *obj.Name, err)
+				if !isNotFoundError(err) {
+					return
+				}
 			}
 			metrics.ApiCallLatency.WithLabelValues("GetObjectCNAME").Observe(duration.Seconds())
 		} else {
@@ -827,9 +849,12 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			duration := time.Since(startTime)
 			metrics.TotalApiCalls.Inc()
-			if err != nil && !isNotFoundError(err) {
+			if err != nil {
 				metrics.FailedApiCallsTotal.Inc()
-				return
+				err = fmt.Errorf("could not fetch NS record ['%s'] : %w", obj.Name, err)
+				if !isNotFoundError(err) {
+					return
+				}
 			}
 			metrics.ApiCallLatency.WithLabelValues("GetObjectNS").Observe(duration.Seconds())
 		} else {
@@ -860,9 +885,12 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			duration := time.Since(startTime)
 			metrics.TotalApiCalls.Inc()
-			if err != nil && !isNotFoundError(err) {
+			if err != nil {
 				metrics.FailedApiCallsTotal.Inc()
-				return
+				err = fmt.Errorf("could not fetch TXT record ['%s'] : %w", *obj.Name, err)
+				if !isNotFoundError(err) {
+					return
+				}
 			}
 			metrics.ApiCallLatency.WithLabelValues("GetObjectTXT").Observe(duration.Seconds())
 		} else {
@@ -874,6 +902,9 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 			obj: obj,
 			res: &res,
 		}
+	}
+	if err != nil {
+		err = fmt.Errorf("could not build recordset: %w", err)
 	}
 	return
 }
