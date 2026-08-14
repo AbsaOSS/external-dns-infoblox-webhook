@@ -1222,6 +1222,171 @@ func TestExtendedRequestMaxResultsBuilder(t *testing.T) {
 	assert.True(t, req.URL.Query().Get("_max_results") == "")
 }
 
+func TestNormalizeBasePath(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		in       string
+		expected string
+	}{
+		{"empty", "", ""},
+		{"whitespace only", "   ", ""},
+		{"single slash", "/", ""},
+		{"only slashes", "///", ""},
+		{"plain", "nios", "nios"},
+		{"leading slash", "/nios", "nios"},
+		{"trailing slash", "nios/", "nios"},
+		{"both slashes", "/nios/", "nios"},
+		{"nested", "/proxy/nios/", "proxy/nios"},
+		{"duplicate slashes", "//proxy//nios//", "proxy/nios"},
+		{"surrounding whitespace", "  /nios/  ", "nios"},
+		{"whitespace inside segments", "/ proxy / nios /", "proxy/nios"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, normalizeBasePath(tc.in))
+		})
+	}
+}
+
+// TestExtendedRequestBuilderDefaultBasePath pins the default (unconfigured) request
+// path so a regression that unconditionally prefixes requests is caught.
+func TestExtendedRequestBuilderDefaultBasePath(t *testing.T) {
+	hostCfg := ibclient.HostConfig{
+		Host:    "localhost",
+		Port:    "8080",
+		Version: "2.3.1",
+	}
+	authCfg := ibclient.AuthConfig{Username: "user", Password: "abcd"}
+	obj := ibclient.NewEmptyRecordCNAME()
+
+	// the builder without base path support and the one constructed with an
+	// empty/blank base path must produce byte-identical URLs
+	legacy := NewExtendedRequestBuilder(0, "", "")
+	legacy.Init(hostCfg, authCfg)
+	legacyReq, err := legacy.BuildRequest(ibclient.GET, obj, "", &ibclient.QueryParams{})
+	assert.NoError(t, err)
+	assert.Equal(t, "/wapi/v2.3.1/record:cname", legacyReq.URL.Path)
+	assert.Equal(t, "", legacyReq.URL.RawPath)
+
+	for _, basePath := range []string{"", "/", "   ", "//"} {
+		rb := NewExtendedRequestBuilderWithBasePath(0, "", "", basePath)
+		rb.Init(hostCfg, authCfg)
+		req, err := rb.BuildRequest(ibclient.GET, obj, "", &ibclient.QueryParams{})
+		assert.NoError(t, err)
+		assert.Equal(t, legacyReq.URL.String(), req.URL.String(), "base path %q must not change the URL", basePath)
+		assert.Equal(t, "", req.URL.RawPath)
+	}
+}
+
+func TestExtendedRequestBuilderBasePath(t *testing.T) {
+	hostCfg := ibclient.HostConfig{
+		Host:    "localhost",
+		Port:    "8080",
+		Version: "2.3.1",
+	}
+	authCfg := ibclient.AuthConfig{Username: "user", Password: "abcd"}
+
+	for _, tc := range []struct {
+		name         string
+		basePath     string
+		expectedPath string
+	}{
+		{"simple", "nios", "/nios/wapi/v2.3.1/record:cname"},
+		{"leading and trailing slash", "/nios/", "/nios/wapi/v2.3.1/record:cname"},
+		{"nested", "proxy/nios", "/proxy/nios/wapi/v2.3.1/record:cname"},
+		{"duplicate slashes", "//proxy//nios//", "/proxy/nios/wapi/v2.3.1/record:cname"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rb := NewExtendedRequestBuilderWithBasePath(0, "", "", tc.basePath)
+			rb.Init(hostCfg, authCfg)
+
+			obj := ibclient.NewEmptyRecordCNAME()
+			req, err := rb.BuildRequest(ibclient.GET, obj, "", &ibclient.QueryParams{})
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expectedPath, req.URL.Path)
+			assert.Equal(t, "localhost:8080", req.URL.Host)
+		})
+	}
+}
+
+// TestExtendedRequestBuilderBasePathPreservesQueryAndMethods makes sure prefixing the
+// path does not interfere with the existing _max_results / name~ behaviour.
+func TestExtendedRequestBuilderBasePathPreservesQueryAndMethods(t *testing.T) {
+	hostCfg := ibclient.HostConfig{
+		Host:    "localhost",
+		Port:    "8080",
+		Version: "2.3.1",
+	}
+	authCfg := ibclient.AuthConfig{Username: "user", Password: "abcd"}
+
+	rb := NewExtendedRequestBuilderWithBasePath(54321, "", "^staging.*test.com$", "/nios/")
+	rb.Init(hostCfg, authCfg)
+
+	obj := ibclient.NewEmptyRecordCNAME()
+
+	req, err := rb.BuildRequest(ibclient.GET, obj, "", &ibclient.QueryParams{})
+	assert.NoError(t, err)
+	assert.Equal(t, "/nios/wapi/v2.3.1/record:cname", req.URL.Path)
+	assert.Equal(t, "54321", req.URL.Query().Get("_max_results"))
+	assert.Equal(t, "^staging.*test.com$", req.URL.Query().Get("name~"))
+
+	// non GET requests get the prefix too, but no query parameters
+	req, err = rb.BuildRequest(ibclient.CREATE, obj, "", &ibclient.QueryParams{})
+	assert.NoError(t, err)
+	assert.Equal(t, "/nios/wapi/v2.3.1/record:cname", req.URL.Path)
+	assert.Equal(t, "", req.URL.Query().Get("_max_results"))
+	assert.Equal(t, "", req.URL.Query().Get("name~"))
+
+	// a reference based request (contains characters that need escaping) stays intact
+	ref := "record:cname/ZG5zLmJpbmRfY25hbWUk:foo/bar"
+	req, err = rb.BuildRequest(ibclient.DELETE, obj, ref, &ibclient.QueryParams{})
+	assert.NoError(t, err)
+	assert.Equal(t, "/nios/wapi/v2.3.1/"+ref, req.URL.Path)
+	assert.True(t, strings.HasPrefix(req.URL.EscapedPath(), "/nios/wapi/v2.3.1/"))
+}
+
+// TestNewRequestBuilderBasePathSelectsExtendedBuilder verifies that setting only the
+// base path is enough to activate the extended request builder and that the normalized
+// prefix reaches it, while a blank base path keeps the upstream default builder.
+func TestNewRequestBuilderBasePathSelectsExtendedBuilder(t *testing.T) {
+	base := StartupConfig{
+		Host:     "localhost",
+		Port:     443,
+		Username: "user",
+		Password: "abcd",
+		Version:  "2.3.1",
+		View:     "default",
+	}
+	hostCfg := ibclient.HostConfig{Host: base.Host, Port: "443", Version: base.Version}
+	authCfg := ibclient.AuthConfig{Username: base.Username, Password: base.Password}
+
+	for _, tc := range []struct {
+		name            string
+		basePath        string
+		wantExtended    bool
+		wantBuilderPath string
+	}{
+		{name: "base path only", basePath: "/nios/", wantExtended: true, wantBuilderPath: "nios"},
+		{name: "nested base path", basePath: "proxy//nios", wantExtended: true, wantBuilderPath: "proxy/nios"},
+		{name: "blank base path", basePath: "  //  ", wantExtended: false},
+		{name: "unset base path", basePath: "", wantExtended: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			cfg.BasePath = tc.basePath
+			rb, err := newRequestBuilder(&cfg, hostCfg, authCfg)
+			assert.NoError(t, err)
+
+			extended, ok := rb.(*ExtendedRequestBuilder)
+			if !tc.wantExtended {
+				assert.False(t, ok, "expected the upstream default builder, got %T", rb)
+				return
+			}
+			assert.True(t, ok, "expected *ExtendedRequestBuilder, got %T", rb)
+			assert.Equal(t, tc.wantBuilderPath, extended.basePath)
+		})
+	}
+}
+
 //func TestGetObject(t *testing.T) {
 //	hostCfg := ibclient.HostConfig{}
 //	authCfg := ibclient.AuthConfig{}

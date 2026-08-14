@@ -26,11 +26,27 @@ To run the provider, you must provide the following Environment Variables:
 | INFOBLOX_SSL_VERIFY                 | true          | false    |
 | INFOBLOX_DRY_RUN                    | false         | false    |
 | INFOBLOX_VIEW                       | default       | false    |
+| INFOBLOX_WAPI_BASE_PATH             |               | false    |
 | INFOBLOX_MAX_RESULTS                | 1500          | false    |
 | INFOBLOX_CREATE_PTR                 | false         | false    |
 | INFOBLOX_DEFAULT_TTL                | 300           | false    |
 | INFOBLOX_USE_TTL                    | true          | false    |
 | INFOBLOX_EXTENSIBLE_ATTRIBUTES_JSON | {}            | false    |
+
+### INFOBLOX_WAPI_BASE_PATH
+
+By default all WAPI requests go to `https://<host>:<port>/wapi/v<version>/...`. If the grid is
+reached through a reverse proxy or an API gateway that serves NIOS under an additional path
+prefix, set `INFOBLOX_WAPI_BASE_PATH` to that prefix:
+
+```bash
+# requests become https://<host>:<port>/nios/wapi/v<version>/...
+INFOBLOX_WAPI_BASE_PATH=nios
+```
+
+Nested prefixes are supported (`INFOBLOX_WAPI_BASE_PATH=proxy/nios`). Leading and trailing
+slashes are optional and are stripped. Leaving the variable unset (or setting it to `/` or an
+empty/blank value) keeps the default `/wapi/v<version>` paths unchanged.
 
 ### INFOBLOX_CREATE_PTR
 
