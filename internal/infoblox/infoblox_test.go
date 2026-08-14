@@ -47,6 +47,9 @@ type mockIBConnector struct {
 	updatedEndpoints    []*endpoint.Endpoint
 	getObjectRequests   []*getObjectRequest
 	requestBuilder      ExtendedRequestBuilder
+	// createError, when set, makes CreateObject fail. It simulates a grid that
+	// rejects a write, e.g. because the WAPI user lacks the permission.
+	createError error
 }
 
 type getObjectRequest struct {
@@ -120,6 +123,9 @@ func (client *mockIBConnector) verifyNoMoreGetObjectRequests(t *testing.T) {
 }
 
 func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, err error) {
+	if client.createError != nil {
+		return "", client.createError
+	}
 	switch obj.ObjectType() {
 	case recordA:
 		client.createdEndpoints = append(
