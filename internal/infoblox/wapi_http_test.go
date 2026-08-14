@@ -320,7 +320,7 @@ func (f *wapiFake) summary() string {
 
 // startWAPIFake serves the fake over TLS and returns a Provider built through
 // NewInfobloxProvider, so the connector under test is the production one.
-func startWAPIFake(t *testing.T, domainFilter endpoint.DomainFilter) (*Provider, *wapiFake) {
+func startWAPIFake(t *testing.T, domainFilter *endpoint.DomainFilter) (*Provider, *wapiFake) {
 	t.Helper()
 
 	fake := newWAPIFake(wapiTestVersion)
