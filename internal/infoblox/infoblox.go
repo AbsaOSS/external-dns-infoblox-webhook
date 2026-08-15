@@ -709,10 +709,13 @@ func (p *Provider) findReverseZone(zones []*ibclient.ZoneAuth, name string) *ibc
 			log.WithError(err).Debugf("fqdn %s is no cidr", zone.Fqdn)
 		} else {
 			if rZoneNet.Contains(ip) {
-				_, mask := rZoneNet.Mask.Size()
-				networks[mask] = zones[i]
-				if mask > maxMask {
-					maxMask = mask
+				// Size() returns the prefix length first and the total bit
+				// count second. The prefix length is what makes one reverse
+				// zone more specific than another.
+				prefixLen, _ := rZoneNet.Mask.Size()
+				networks[prefixLen] = zones[i]
+				if prefixLen > maxMask {
+					maxMask = prefixLen
 				}
 			}
 		}

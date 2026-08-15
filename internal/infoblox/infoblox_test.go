@@ -1261,3 +1261,26 @@ func (r *mockRequestor) SendRequest(req *http.Request) (res []byte, err error) {
 func validateEndpoints(t *testing.T, endpoints []*endpoint.Endpoint, expected []*endpoint.Endpoint) {
 	assert.True(t, SameEndpoints(endpoints, expected), "actual and expected endpoints don't match. %s:%s", endpoints, expected)
 }
+
+func TestFindReverseZonePicksMostSpecific(t *testing.T) {
+	provider := &Provider{}
+	broad := &ibclient.ZoneAuth{Fqdn: "10.0.0.0/8"}
+	narrow := &ibclient.ZoneAuth{Fqdn: "10.1.2.0/24"}
+
+	// The order must not matter, so try both.
+	assert.Equal(t, narrow, provider.findReverseZone([]*ibclient.ZoneAuth{broad, narrow}, "10.1.2.3"))
+	assert.Equal(t, narrow, provider.findReverseZone([]*ibclient.ZoneAuth{narrow, broad}, "10.1.2.3"))
+
+	// An address outside the narrow zone falls back to the broad one.
+	assert.Equal(t, broad, provider.findReverseZone([]*ibclient.ZoneAuth{broad, narrow}, "10.9.9.9"))
+}
+
+func TestFindReverseZonePicksMostSpecificIPv6(t *testing.T) {
+	provider := &Provider{}
+	broad := &ibclient.ZoneAuth{Fqdn: "2001:db8::/32"}
+	narrow := &ibclient.ZoneAuth{Fqdn: "2001:db8:1::/48"}
+
+	assert.Equal(t, narrow, provider.findReverseZone([]*ibclient.ZoneAuth{broad, narrow}, "2001:db8:1::1"))
+	assert.Equal(t, narrow, provider.findReverseZone([]*ibclient.ZoneAuth{narrow, broad}, "2001:db8:1::1"))
+	assert.Equal(t, broad, provider.findReverseZone([]*ibclient.ZoneAuth{broad, narrow}, "2001:db8:2::1"))
+}
