@@ -945,7 +945,7 @@ func TestInfobloxApplyChanges(t *testing.T) {
 		endpoint.NewEndpoint("foo.example.com", endpoint.RecordTypeTXT, "tag"),
 		endpoint.NewEndpoint("bar.example.com", endpoint.RecordTypeCNAME, "other.com"),
 		endpoint.NewEndpoint("zone.example.com", endpoint.RecordTypeNS, "ns-zone.example.com"),
-		endpoint.NewEndpoint("bar.example.com", endpoint.RecordTypeTXT, "tag"),
+		// no TXT for bar.example.com: a CNAME exists at that name, see issue #23
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeA, "5.6.7.8"),
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeTXT, "tag"),
 		endpoint.NewEndpoint("new.example.com", endpoint.RecordTypeA, "111.222.111.222"),
@@ -981,7 +981,7 @@ func TestInfobloxApplyChangesReverse(t *testing.T) {
 		endpoint.NewEndpoint("foo.example.com", endpoint.RecordTypeTXT, "tag"),
 		endpoint.NewEndpoint("bar.example.com", endpoint.RecordTypeCNAME, "other.com"),
 		endpoint.NewEndpoint("bar.example.com", endpoint.RecordTypeNS, "other.com"),
-		endpoint.NewEndpoint("bar.example.com", endpoint.RecordTypeTXT, "tag"),
+		// no TXT for bar.example.com: a CNAME exists at that name, see issue #23
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeA, "5.6.7.8"),
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeTXT, "tag"),
 		endpoint.NewEndpoint("new.example.com", endpoint.RecordTypeA, "111.222.111.222"),
@@ -1094,6 +1094,101 @@ func testInfobloxApplyChangesInternal(t *testing.T, dryRun, createPTR bool, clie
 
 	if err := providerCfg.ApplyChanges(context.Background(), changes); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestInfobloxApplyChangesCNAMEWithTXT covers https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/23
+//
+// The external-dns TXT registry emits a legacy ownership TXT record at the very same
+// owner name as the record it owns. For a CNAME endpoint that TXT record can never be
+// created, because DNS forbids a CNAME from coexisting with any other record type at
+// the same owner name (RFC 1034 3.6.2, RFC 2181 10.1) and Infoblox rejects it with
+// "400 Bad Request". The type-prefixed TXT record ("cname-<name>") is legal and still
+// carries the ownership information, so it must survive.
+func TestInfobloxApplyChangesCNAMEWithTXT(t *testing.T) {
+	client := mockIBConnector{
+		mockInfobloxZones: &[]ibclient.ZoneAuth{
+			createMockInfobloxZone("example.com"),
+		},
+		mockInfobloxObjects: &[]ibclient.IBObject{},
+	}
+
+	providerCfg := newInfobloxProvider(
+		endpoint.NewDomainFilter([]string{"example.com"}),
+		provider.NewZoneIDFilter([]string{""}),
+		"",
+		false,
+		false,
+		&client,
+	)
+
+	changes := &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("cname-test.example.com", endpoint.RecordTypeCNAME, "cname-target.example.com"),
+			// legacy ownership TXT, collides with the CNAME above
+			endpoint.NewEndpoint("cname-test.example.com", endpoint.RecordTypeTXT, "heritage=external-dns,external-dns/owner=default"),
+			// type-prefixed ownership TXT, legal
+			endpoint.NewEndpoint("cname-cname-test.example.com", endpoint.RecordTypeTXT, "heritage=external-dns,external-dns/owner=default"),
+		},
+	}
+
+	if err := providerCfg.ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatal(err)
+	}
+
+	validateEndpoints(t, client.createdEndpoints, []*endpoint.Endpoint{
+		endpoint.NewEndpoint("cname-test.example.com", endpoint.RecordTypeCNAME, "cname-target.example.com"),
+		endpoint.NewEndpoint("cname-cname-test.example.com", endpoint.RecordTypeTXT, "heritage=external-dns,external-dns/owner=default"),
+	})
+
+	for _, ep := range client.createdEndpoints {
+		if ep.RecordType == endpoint.RecordTypeTXT && ep.DNSName == "cname-test.example.com" {
+			t.Errorf("TXT record must not be created at the name of a CNAME record, got: %s", ep)
+		}
+	}
+}
+
+// TestInfobloxApplyChangesCNAMEWithTXTExistingCNAME is the steady-state variant of
+// issue #23: the CNAME was created in an earlier reconciliation loop, so only the
+// colliding legacy TXT record is left in the change set. It must still be skipped.
+func TestInfobloxApplyChangesCNAMEWithTXTExistingCNAME(t *testing.T) {
+	client := mockIBConnector{
+		mockInfobloxZones: &[]ibclient.ZoneAuth{
+			createMockInfobloxZone("example.com"),
+		},
+		mockInfobloxObjects: &[]ibclient.IBObject{
+			createMockInfobloxObjectWithZone("cname-test.example.com", endpoint.RecordTypeCNAME, "cname-target.example.com", "example.com"),
+		},
+	}
+
+	providerCfg := newInfobloxProvider(
+		endpoint.NewDomainFilter([]string{"example.com"}),
+		provider.NewZoneIDFilter([]string{""}),
+		"",
+		false,
+		false,
+		&client,
+	)
+
+	changes := &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("cname-test.example.com", endpoint.RecordTypeTXT, "heritage=external-dns,external-dns/owner=default"),
+			endpoint.NewEndpoint("cname-cname-test.example.com", endpoint.RecordTypeTXT, "heritage=external-dns,external-dns/owner=default"),
+		},
+	}
+
+	if err := providerCfg.ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatal(err)
+	}
+
+	validateEndpoints(t, client.createdEndpoints, []*endpoint.Endpoint{
+		endpoint.NewEndpoint("cname-cname-test.example.com", endpoint.RecordTypeTXT, "heritage=external-dns,external-dns/owner=default"),
+	})
+
+	for _, ep := range client.createdEndpoints {
+		if ep.DNSName == "cname-test.example.com" {
+			t.Errorf("TXT record must not be created at the name of an existing CNAME record, got: %s", ep)
+		}
 	}
 }
 

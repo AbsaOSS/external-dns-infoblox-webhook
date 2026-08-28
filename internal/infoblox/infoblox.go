@@ -391,7 +391,7 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 	}
 
 	var errs []error
-	changesByZone := p.ChangesByZone(zonePointerConverter(zones), changes)
+	changesByZone := p.ChangesByZone(zonePointerConverter(zones), p.filterConflictingTXTRecords(changes))
 	for zone, changes := range changesByZone {
 		for _, change := range changes {
 			record, err := p.buildRecord(change)
@@ -448,6 +448,71 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 	}
 
 	return nil
+}
+
+// filterConflictingTXTRecords drops TXT records that would be created or updated at an
+// owner name which already holds (or is about to hold) a CNAME record.
+//
+// RFC 1034 3.6.2 and RFC 2181 10.1 forbid a CNAME from coexisting with any other record
+// type at the same owner name, and Infoblox enforces that with a "400 Bad Request".
+// The external-dns TXT registry however still emits the legacy ownership TXT record at
+// the bare owner name in addition to the type-prefixed one ("cname-<name>"), so for every
+// CNAME endpoint one unusable TXT record reaches the provider. The type-prefixed TXT
+// record carries the same ownership information, so skipping the legacy one loses nothing.
+func (p *Provider) filterConflictingTXTRecords(changes []*infobloxChange) []*infobloxChange {
+	// names with a CNAME in this very change set, plus a memo for names looked up remotely
+	hasCNAME := make(map[string]bool)
+	for _, c := range changes {
+		if c.Endpoint.RecordType == endpoint.RecordTypeCNAME && c.Action != infobloxDelete {
+			hasCNAME[strings.ToLower(c.Endpoint.DNSName)] = true
+		}
+	}
+
+	filtered := make([]*infobloxChange, 0, len(changes))
+	for _, c := range changes {
+		if c.Endpoint.RecordType != endpoint.RecordTypeTXT || c.Action == infobloxDelete {
+			filtered = append(filtered, c)
+			continue
+		}
+
+		name := strings.ToLower(c.Endpoint.DNSName)
+		if _, known := hasCNAME[name]; !known {
+			hasCNAME[name] = p.cnameExists(c.Endpoint.DNSName)
+		}
+		if !hasCNAME[name] {
+			filtered = append(filtered, c)
+			continue
+		}
+
+		log.WithFields(log.Fields{
+			"record": c.Endpoint.DNSName,
+			"action": c.Action,
+			"type":   endpoint.RecordTypeTXT,
+		}).Debug("Skipping TXT record, a CNAME record exists at the same name")
+	}
+
+	return filtered
+}
+
+// cnameExists reports whether Infoblox already holds a CNAME record at the given name.
+func (p *Provider) cnameExists(name string) bool {
+	var res []ibclient.RecordCNAME
+	obj := ibclient.NewEmptyRecordCNAME()
+	obj.Name = &name
+
+	startTime := time.Now()
+	err := p.client.GetObject(obj, "", ibclient.NewQueryParams(false, map[string]string{"name": name}), &res)
+	metrics.TotalApiCalls.Inc()
+	metrics.ApiCallLatency.WithLabelValues("GetObjectCNAME").Observe(time.Since(startTime).Seconds())
+	if err != nil {
+		if !isNotFoundError(err) {
+			metrics.FailedApiCallsTotal.Inc()
+			log.WithError(err).Debugf("could not look up CNAME record '%s'", name)
+		}
+		return false
+	}
+
+	return len(res) > 0
 }
 
 func getRefID(record *infobloxRecordSet) (string, log.Fields, error) {
