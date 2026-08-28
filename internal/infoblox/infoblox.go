@@ -53,6 +53,13 @@ func isNotFoundError(err error) bool {
 	return ok
 }
 
+// isIPv6 reports whether addr is an IPv6 address. IPv4 addresses, IPv4-mapped
+// IPv6 addresses and anything that is not an IP address at all are not IPv6.
+func isIPv6(addr string) bool {
+	ip := net.ParseIP(addr)
+	return ip != nil && ip.To4() == nil
+}
+
 type Provider struct {
 	provider.BaseProvider
 	client       ibclient.IBConnector
@@ -214,7 +221,20 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 		endpointsA := ToAResponseMap(resA).ToEndpoints()
 		endpoints = append(endpoints, endpointsA...)
 
-		// Include Host records since they should be treated synonymously with A records
+		var resAAAA []ibclient.RecordAAAA
+		objAAAA := ibclient.NewEmptyRecordAAAA()
+		objAAAA.View = p.config.View
+		objAAAA.Ea = extAttrs
+		objAAAA.Zone = zone.Fqdn
+		err = PagingGetObject(p.client, objAAAA, "", searchParams, &resAAAA)
+		if err != nil && !isNotFoundError(err) {
+			metrics.FailedApiCallsTotal.Inc()
+			return nil, fmt.Errorf("could not fetch AAAA records from zone '%s': %w", zone.Fqdn, err)
+		}
+		endpointsAAAA := ToAAAAResponseMap(resAAAA).ToEndpoints()
+		endpoints = append(endpoints, endpointsAAAA...)
+
+		// Include Host records since they should be treated synonymously with A and AAAA records
 		var resH []ibclient.HostRecord
 		objH := ibclient.NewEmptyHostRecord()
 		objH.View = &p.config.View
@@ -227,6 +247,8 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 		}
 		endpointsHost := ToHostResponseMap(resH).ToEndpoints()
 		endpoints = append(endpoints, endpointsHost...)
+		endpointsHostAAAA := ToHostAAAAResponseMap(resH).ToEndpoints()
+		endpoints = append(endpoints, endpointsHostAAAA...)
 
 		var resC []ibclient.RecordCNAME
 		objC := ibclient.NewEmptyRecordCNAME()
@@ -298,10 +320,10 @@ func (p *Provider) Records(_ context.Context) (endpoints []*endpoint.Endpoint, e
 		}
 
 		for i := range endpoints {
-			if endpoints[i].RecordType != endpoint.RecordTypeA {
+			if endpoints[i].RecordType != endpoint.RecordTypeA && endpoints[i].RecordType != endpoint.RecordTypeAAAA {
 				continue
 			}
-			// if PTR record already exists for A record, then mark it as such
+			// if PTR record already exists for A/AAAA record, then mark it as such
 			if ptrRecordsMap[endpoints[i].DNSName] {
 				found := false
 				for j := range endpoints[i].ProviderSpecific {
@@ -333,10 +355,10 @@ func (p *Provider) AdjustEndpoints(endpoints []*endpoint.Endpoint) ([]*endpoint.
 		return endpoints, nil
 	}
 
-	// for all A records, we want to create PTR records
+	// for all A and AAAA records, we want to create PTR records
 	// so add provider specific property to track if the record was created or not
 	for i := range endpoints {
-		if endpoints[i].RecordType == endpoint.RecordTypeA {
+		if endpoints[i].RecordType == endpoint.RecordTypeA || endpoints[i].RecordType == endpoint.RecordTypeAAAA {
 			found := false
 			for j := range endpoints[i].ProviderSpecific {
 				if endpoints[i].ProviderSpecific[j].Name == providerSpecificInfobloxPtrRecord {
@@ -461,6 +483,14 @@ func getRefID(record *infobloxRecordSet) (string, log.Fields, error) {
 		l["ttl"] = AsInt64(record.obj.(*ibclient.RecordA).Ttl)
 		l["target"] = AsString(record.obj.(*ibclient.RecordA).Ipv4Addr)
 		for _, r := range *record.res.(*[]ibclient.RecordA) {
+			return r.Ref, l, nil
+		}
+		return "", l, nil
+	case "RecordAAAA":
+		l["record"] = AsString(record.obj.(*ibclient.RecordAAAA).Name)
+		l["ttl"] = AsInt64(record.obj.(*ibclient.RecordAAAA).Ttl)
+		l["target"] = AsString(record.obj.(*ibclient.RecordAAAA).Ipv6Addr)
+		for _, r := range *record.res.(*[]ibclient.RecordAAAA) {
 			return r.Ref, l, nil
 		}
 		return "", l, nil
@@ -665,7 +695,7 @@ func (p *Provider) ChangesByZone(zones []*ibclient.ZoneAuth, changeSets []*infob
 		}
 		changes[zone.Fqdn] = append(changes[zone.Fqdn], c)
 
-		if p.config.CreatePTR && c.Endpoint.RecordType == endpoint.RecordTypeA {
+		if p.config.CreatePTR && (c.Endpoint.RecordType == endpoint.RecordTypeA || c.Endpoint.RecordType == endpoint.RecordTypeAAAA) {
 			reverseZone := p.findReverseZone(zones, c.Endpoint.Targets[0])
 			if reverseZone == nil {
 				log.Debugf("Ignoring changes to '%s' because a suitable Infoblox DNS reverse zone was not found.", c.Endpoint.Targets)
@@ -761,17 +791,54 @@ func (p *Provider) recordSet(ep *endpoint.Endpoint, getObject bool) (recordSet i
 			obj: obj,
 			res: &res,
 		}
+	case endpoint.RecordTypeAAAA:
+		var res []ibclient.RecordAAAA
+		obj := ibclient.NewEmptyRecordAAAA()
+		obj.Name = &ep.DNSName
+		// TODO: get target index
+		obj.Ipv6Addr = &ep.Targets[0]
+		obj.Ea = extAttrs
+		obj.Ttl = &ttl
+		obj.UseTtl = &p.config.UseTTL
+		if getObject {
+			queryParams := ibclient.NewQueryParams(false, map[string]string{"name": *obj.Name, "ipv6addr": *obj.Ipv6Addr})
+			err = p.client.GetObject(obj, "", queryParams, &res)
+			duration := time.Since(startTime)
+			metrics.TotalApiCalls.Inc()
+			if err != nil && !isNotFoundError(err) {
+				metrics.FailedApiCallsTotal.Inc()
+				err = fmt.Errorf("could not fetch AAAA record ['%s':'%s'] : %w", *obj.Name, *obj.Ipv6Addr, err)
+				return
+			}
+			metrics.ApiCallLatency.WithLabelValues("GetObjectAAAA").Observe(duration.Seconds())
+		} else {
+			// If getObject is not set (action == create), we need to set the View for Infoblox to find the parent zone
+			// If View is set for the other actions, Infoblox will complain that the view field is not allowed
+			obj.View = p.config.View
+		}
+		recordSet = infobloxRecordSet{
+			obj: obj,
+			res: &res,
+		}
 	case endpoint.RecordTypePTR:
 		var res []ibclient.RecordPTR
 		obj := ibclient.NewEmptyRecordPTR()
 		obj.PtrdName = &ep.DNSName
 		// TODO: get target index
-		obj.Ipv4Addr = &ep.Targets[0]
+		// An IPv6 PTR lives in ip6.arpa and is addressed through ipv6addr, an
+		// IPv4 PTR lives in in-addr.arpa and is addressed through ipv4addr.
+		addrField := "ipv4addr"
+		if isIPv6(ep.Targets[0]) {
+			addrField = "ipv6addr"
+			obj.Ipv6Addr = &ep.Targets[0]
+		} else {
+			obj.Ipv4Addr = &ep.Targets[0]
+		}
 		obj.Ea = extAttrs
 		obj.Ttl = &ttl
 		obj.UseTtl = &p.config.UseTTL
 		if getObject {
-			queryParams := ibclient.NewQueryParams(false, map[string]string{"ptrdname": *obj.PtrdName, "ipv4addr": *obj.Ipv4Addr})
+			queryParams := ibclient.NewQueryParams(false, map[string]string{"ptrdname": *obj.PtrdName, addrField: ep.Targets[0]})
 			err = p.client.GetObject(obj, "", queryParams, &res)
 			duration := time.Since(startTime)
 			metrics.TotalApiCalls.Inc()
