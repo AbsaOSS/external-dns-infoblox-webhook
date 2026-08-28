@@ -5,6 +5,7 @@ Infoblox provider based on in-tree provider for ExternalDNS. Supported records:
 | Record Type | Status     |
 |-------------|------------|
 | A           | supported  |
+| AAAA        | supported  |
 | CNAME       | supported  |
 | TXT         | supported  |
 | PTR         | not tested |
