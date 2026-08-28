@@ -570,6 +570,16 @@ func (p *Provider) CountDiff(changes *plan.Changes) {
 			continue
 		}
 
+		// A DNS name can hold at most one CNAME record, so splitting a retarget into
+		// a create plus a delete makes Infoblox reject the create with an
+		// IBDataConflictError ("the record already exists"): creates are submitted
+		// before deletes. Leave the endpoint in UpdateNew so the existing record is
+		// retargeted with a single UpdateObject call instead.
+		// See https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/63
+		if newEp.RecordType == endpoint.RecordTypeCNAME && len(oldEp.Targets) == 1 && len(newEp.Targets) == 1 {
+			continue
+		}
+
 		// oldEP is found
 		oldTargets := targetsToMap(oldEp.Targets)
 		newTargets := targetsToMap(newEp.Targets)

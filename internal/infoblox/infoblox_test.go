@@ -45,6 +45,7 @@ type mockIBConnector struct {
 	createdEndpoints    []*endpoint.Endpoint
 	deletedEndpoints    []*endpoint.Endpoint
 	updatedEndpoints    []*endpoint.Endpoint
+	updatedRefs         []string
 	getObjectRequests   []*getObjectRequest
 	requestBuilder      ExtendedRequestBuilder
 }
@@ -133,6 +134,17 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.RecordA).Name)), *obj.(*ibclient.RecordA).Name)
 		obj.(*ibclient.RecordA).Ref = ref
 	case recordCname:
+		// Infoblox rejects a second record:cname with the same name with an
+		// IBDataConflictError. Emulate that so tests catch create-instead-of-update
+		// regressions (see issue #63).
+		for _, existing := range *client.mockInfobloxObjects {
+			if existing.ObjectType() != recordCname {
+				continue
+			}
+			if AsString(existing.(*ibclient.RecordCNAME).Name) == AsString(obj.(*ibclient.RecordCNAME).Name) {
+				return "", fmt.Errorf("the record '%s' already exists", AsString(obj.(*ibclient.RecordCNAME).Name))
+			}
+		}
 		client.createdEndpoints = append(
 			client.createdEndpoints,
 			endpoint.NewEndpoint(
@@ -515,56 +527,57 @@ func (client *mockIBConnector) DeleteObject(ref string) (refRes string, err erro
 }
 
 func (client *mockIBConnector) UpdateObject(obj ibclient.IBObject, ref string) (refRes string, err error) {
+	client.updatedRefs = append(client.updatedRefs, ref)
 	switch obj.ObjectType() {
-	case "record:a":
+	case recordA:
 		client.updatedEndpoints = append(
 			client.updatedEndpoints,
 			endpoint.NewEndpoint(
 				*obj.(*ibclient.RecordA).Name,
-				*obj.(*ibclient.RecordA).Ipv4Addr,
 				endpoint.RecordTypeA,
+				*obj.(*ibclient.RecordA).Ipv4Addr,
 			),
 		)
-	case "record:cname":
+	case recordCname:
 		client.updatedEndpoints = append(
 			client.updatedEndpoints,
 			endpoint.NewEndpoint(
 				*obj.(*ibclient.RecordCNAME).Name,
-				*obj.(*ibclient.RecordCNAME).Canonical,
 				endpoint.RecordTypeCNAME,
+				*obj.(*ibclient.RecordCNAME).Canonical,
 			),
 		)
-	case "record:ns":
+	case recordNs:
 		client.updatedEndpoints = append(
 			client.updatedEndpoints,
 			endpoint.NewEndpoint(
 				obj.(*ibclient.RecordNS).Name,
-				*obj.(*ibclient.RecordNS).Nameserver,
 				endpoint.RecordTypeNS,
+				*obj.(*ibclient.RecordNS).Nameserver,
 			),
 		)
-	case "record:host":
+	case recordHost:
 		for _, i := range obj.(*ibclient.HostRecord).Ipv4Addrs {
 			client.updatedEndpoints = append(
 				client.updatedEndpoints,
 				endpoint.NewEndpoint(
 					*obj.(*ibclient.HostRecord).Name,
-					*i.Ipv4Addr,
 					endpoint.RecordTypeA,
+					*i.Ipv4Addr,
 				),
 			)
 		}
-	case "record:txt":
+	case recordTxt:
 		client.updatedEndpoints = append(
 			client.updatedEndpoints,
 			endpoint.NewEndpoint(
 				*obj.(*ibclient.RecordTXT).Name,
-				*obj.(*ibclient.RecordTXT).Text,
 				endpoint.RecordTypeTXT,
+				*obj.(*ibclient.RecordTXT).Text,
 			),
 		)
 	}
-	return "", nil
+	return ref, nil
 }
 
 func createMockInfobloxZone(fqdn string) ibclient.ZoneAuth {
@@ -1095,6 +1108,52 @@ func testInfobloxApplyChangesInternal(t *testing.T, dryRun, createPTR bool, clie
 	if err := providerCfg.ApplyChanges(context.Background(), changes); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestInfobloxApplyChangesUpdateCNAME asserts that retargeting an existing CNAME
+// is applied as a WAPI update of the existing record. Splitting it into a create
+// plus a delete makes the create fail with an IBDataConflictError, because a name
+// can hold only one CNAME and creates are submitted before deletes.
+// See https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/63
+func TestInfobloxApplyChangesUpdateCNAME(t *testing.T) {
+	existing := createMockInfobloxObjectWithZone("alloy.example.com", endpoint.RecordTypeCNAME, "traefik.example.com", "example.com")
+	client := mockIBConnector{
+		mockInfobloxZones: &[]ibclient.ZoneAuth{
+			createMockInfobloxZone("example.com"),
+		},
+		mockInfobloxObjects: &[]ibclient.IBObject{existing},
+	}
+
+	providerCfg := newInfobloxProvider(
+		endpoint.NewDomainFilter([]string{"example.com"}),
+		provider.NewZoneIDFilter([]string{""}),
+		"",
+		false,
+		false,
+		&client,
+	)
+
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("alloy.example.com", endpoint.RecordTypeCNAME, "traefik.example.com"),
+		},
+		UpdateNew: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("alloy.example.com", endpoint.RecordTypeCNAME, "nginx.example.com"),
+		},
+	}
+
+	if err := providerCfg.ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatal(err)
+	}
+
+	validateEndpoints(t, client.updatedEndpoints, []*endpoint.Endpoint{
+		endpoint.NewEndpoint("alloy.example.com", endpoint.RecordTypeCNAME, "nginx.example.com"),
+	})
+	validateEndpoints(t, client.createdEndpoints, []*endpoint.Endpoint{})
+	validateEndpoints(t, client.deletedEndpoints, []*endpoint.Endpoint{})
+
+	// The update has to be sent against the reference of the pre-existing record.
+	assert.Equal(t, []string{existing.(*ibclient.RecordCNAME).Ref}, client.updatedRefs)
 }
 
 func TestInfobloxZones(t *testing.T) {
