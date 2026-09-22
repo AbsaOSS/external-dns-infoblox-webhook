@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -377,7 +378,90 @@ func zonePointerConverter(in []ibclient.ZoneAuth) []*ibclient.ZoneAuth {
 	return out
 }
 
-// submitChanges sends changes to Infoblox
+// orderChanges reorders an apply batch so that an interrupted or aborted run
+// degrades safely with respect to the registry ownership TXT records that
+// external-dns pairs with every managed record. external-dns applies a data
+// record (A/AAAA/CNAME/...) and its ownership TXT as two independent WAPI calls
+// with no transaction and no rollback (see submitChanges), so if the run stops
+// part-way (a pod restart, an OOM, a write timeout, or the first failed call,
+// which aborts the batch) one half of the pair can be left behind.
+//
+// Creating the ownership TXT before its data record and deleting it after means
+// the half that survives is, at worst, a TXT-without-data record (no live
+// resolution, reclaimable by the registry) rather than a live data record that
+// external-dns can neither adopt nor delete because it carries no owner label.
+//
+// Changes are partitioned into ownership-TXT creates, data creates, updates,
+// data deletes and ownership-TXT deletes, and applied in that order; the
+// relative order within each group is preserved. submitChanges applies the
+// ordered batch across every zone in a single pass, so the guarantee holds even
+// when a data record and its ownership TXT resolve to different Infoblox zones
+// (the createPTR reverse zone, or a record at the apex of a delegated sub-zone
+// whose type-prefixed ownership TXT resolves to the parent zone).
+//
+// One case cannot be ordered at the provider level and is left for external-dns
+// to reconcile: a TXT source record, whose data TXT and ownership TXT are both
+// endpoint.RecordTypeTXT and so cannot be ordered relative to each other. A
+// lone ownership TXT is reclaimed by the registry once its data record and
+// source are gone.
+func orderChanges(changes []*infobloxChange) {
+	isTXT := func(c *infobloxChange) bool {
+		return c.Endpoint.RecordType == endpoint.RecordTypeTXT
+	}
+
+	// Partition into the phases we apply in order; order within each phase is
+	// preserved. Ownership TXT goes before its data record on create and after
+	// it on delete. Partitioning (rather than a comparator that also re-encodes
+	// the CREATE -> UPDATE -> DELETE phase order) keeps the ordering rule
+	// explicit and does not rely on the batch already being phase-ordered.
+	var createTXT, createData, updates, deleteData, deleteTXT []*infobloxChange
+	for _, c := range changes {
+		switch {
+		case c.Action == infobloxCreate && isTXT(c):
+			createTXT = append(createTXT, c)
+		case c.Action == infobloxCreate:
+			createData = append(createData, c)
+		case c.Action == infobloxDelete && isTXT(c):
+			deleteTXT = append(deleteTXT, c)
+		case c.Action == infobloxDelete:
+			deleteData = append(deleteData, c)
+		default: // infobloxUpdate
+			updates = append(updates, c)
+		}
+	}
+
+	ordered := make([]*infobloxChange, 0, len(changes))
+	ordered = append(ordered, createTXT...)
+	ordered = append(ordered, createData...)
+	ordered = append(ordered, updates...)
+	ordered = append(ordered, deleteData...)
+	ordered = append(ordered, deleteTXT...)
+	copy(changes, ordered)
+}
+
+// submitChanges applies a batch of record changes to Infoblox.
+//
+// The batch is applied in one ownership-safe order across every zone (see
+// orderChanges): each ownership TXT is created before the data record it
+// protects and deleted after it. submitChanges then stops at the first error
+// (building, looking up or writing a record) instead of collecting errors and
+// continuing. That ordering-plus-fail-fast combination is what keeps the grid
+// from ever holding a live data record with no owner TXT:
+//
+//   - stopping immediately means a data record is never written after its
+//     ownership TXT failed, and an ownership TXT is never deleted after its
+//     data record failed to delete;
+//   - thanks to the ordering, whatever was already applied when we stop leaves
+//     at most a harmless TXT-without-data remnant (no live resolution,
+//     reclaimable by the registry), never a live data record without its owner;
+//   - the changes we did not reach are deferred, not lost: external-dns
+//     recomputes the diff from the live grid and retries them on its next
+//     reconcile, and the changes already applied are current so are not redone.
+//
+// Do not turn this back into a best-effort loop that records errors and keeps
+// going: a data-record create that succeeds after its ownership-TXT create
+// failed (or a TXT delete after its data delete failed) is exactly the
+// half-orphan the ordering exists to prevent.
 func (p *Provider) submitChanges(changes []*infobloxChange) error {
 	// return early if there is nothing to change
 	if len(changes) == 0 {
@@ -390,61 +474,79 @@ func (p *Provider) submitChanges(changes []*infobloxChange) error {
 		return fmt.Errorf("could not fetch zones: %w", err)
 	}
 
-	var errs []error
+	// ChangesByZone drops records outside a hosted zone and expands createPTR A
+	// records into their reverse-zone PTR companions. It returns a map, and Go
+	// iterates maps in a random order, so flatten it back into one slice (zones
+	// in a stable order) and order the whole batch: the ownership-TXT ordering
+	// has to hold across all zones, not just within a single one.
 	changesByZone := p.ChangesByZone(zonePointerConverter(zones), changes)
-	for zone, changes := range changesByZone {
-		for _, change := range changes {
-			record, err := p.buildRecord(change)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("could not build record (%s): %w", change, err))
-				continue
-			}
 
-			refId, logFields, err := getRefID(record)
-			if change.Action != infobloxCreate && err != nil {
-				errs = append(errs, err)
-				continue
-			}
+	zoneNames := make([]string, 0, len(changesByZone))
+	for zone := range changesByZone {
+		zoneNames = append(zoneNames, zone)
+	}
+	sort.Strings(zoneNames)
 
-			logFields["action"] = change.Action
-			logFields[defaultZoneName] = zone
-			if p.config.DryRun {
-				log.WithFields(logFields).Info("Dry run: skipping..")
-				continue
-			}
-
-			log.WithFields(logFields).Info("Changing record")
-			var actionErr error
-			startTime := time.Now()
-
-			switch change.Action {
-			case infobloxCreate:
-				_, actionErr = p.client.CreateObject(record.obj)
-				duration := time.Since(startTime)
-				metrics.ApiCallLatency.WithLabelValues("GetObject").Observe(duration.Seconds())
-				metrics.TotalApiCalls.Inc()
-			case infobloxDelete:
-				_, actionErr = p.client.DeleteObject(refId)
-				duration := time.Since(startTime)
-				metrics.ApiCallLatency.WithLabelValues("DeleteObject").Observe(duration.Seconds())
-				metrics.TotalApiCalls.Inc()
-			case infobloxUpdate:
-				_, actionErr = p.client.UpdateObject(record.obj, refId)
-				duration := time.Since(startTime)
-				metrics.ApiCallLatency.WithLabelValues("UpdateObject").Observe(duration.Seconds())
-				metrics.TotalApiCalls.Inc()
-			default:
-				actionErr = fmt.Errorf("unknown action '%s'", change.Action)
-			}
-
-			if actionErr != nil {
-				errs = append(errs, actionErr)
-			}
+	zoneOf := make(map[*infobloxChange]string)
+	ordered := make([]*infobloxChange, 0, len(changes))
+	for _, zone := range zoneNames {
+		for _, change := range changesByZone[zone] {
+			zoneOf[change] = zone
+			ordered = append(ordered, change)
 		}
 	}
+	orderChanges(ordered)
 
-	if len(errs) > 0 {
-		return fmt.Errorf("encountered errors: %v", errs)
+	for _, change := range ordered {
+		record, err := p.buildRecord(change)
+		if err != nil {
+			return fmt.Errorf("could not build record (%s): %w", change, err)
+		}
+
+		// a create has no existing object to reference, so a missing ref is
+		// expected there; for an update or delete it is fatal, so fail fast
+		// rather than act on a record we cannot find.
+		refId, logFields, err := getRefID(record)
+		if change.Action != infobloxCreate && err != nil {
+			return err
+		}
+
+		logFields["action"] = change.Action
+		logFields[defaultZoneName] = zoneOf[change]
+		if p.config.DryRun {
+			log.WithFields(logFields).Info("Dry run: skipping..")
+			continue
+		}
+
+		log.WithFields(logFields).Info("Changing record")
+		var actionErr error
+		startTime := time.Now()
+
+		switch change.Action {
+		case infobloxCreate:
+			_, actionErr = p.client.CreateObject(record.obj)
+			duration := time.Since(startTime)
+			metrics.ApiCallLatency.WithLabelValues("GetObject").Observe(duration.Seconds())
+			metrics.TotalApiCalls.Inc()
+		case infobloxDelete:
+			_, actionErr = p.client.DeleteObject(refId)
+			duration := time.Since(startTime)
+			metrics.ApiCallLatency.WithLabelValues("DeleteObject").Observe(duration.Seconds())
+			metrics.TotalApiCalls.Inc()
+		case infobloxUpdate:
+			_, actionErr = p.client.UpdateObject(record.obj, refId)
+			duration := time.Since(startTime)
+			metrics.ApiCallLatency.WithLabelValues("UpdateObject").Observe(duration.Seconds())
+			metrics.TotalApiCalls.Inc()
+		default:
+			actionErr = fmt.Errorf("unknown action '%s'", change.Action)
+		}
+
+		// fail fast on the first write error (see the submitChanges doc):
+		// continuing best-effort could leave a live data record with no owner TXT.
+		if actionErr != nil {
+			return actionErr
+		}
 	}
 
 	return nil

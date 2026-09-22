@@ -47,6 +47,9 @@ type mockIBConnector struct {
 	updatedEndpoints    []*endpoint.Endpoint
 	getObjectRequests   []*getObjectRequest
 	requestBuilder      ExtendedRequestBuilder
+	// createObjectErr, when set, lets a test make a specific CreateObject call
+	// fail before the record is recorded, to exercise mid-batch failure handling.
+	createObjectErr func(obj ibclient.IBObject) error
 }
 
 type getObjectRequest struct {
@@ -120,6 +123,11 @@ func (client *mockIBConnector) verifyNoMoreGetObjectRequests(t *testing.T) {
 }
 
 func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, err error) {
+	if client.createObjectErr != nil {
+		if err := client.createObjectErr(obj); err != nil {
+			return "", err
+		}
+	}
 	switch obj.ObjectType() {
 	case recordA:
 		client.createdEndpoints = append(
@@ -1016,6 +1024,188 @@ func TestInfobloxApplyChangesDryRun(t *testing.T) {
 	validateEndpoints(t, client.deletedEndpoints, []*endpoint.Endpoint{})
 
 	validateEndpoints(t, client.updatedEndpoints, []*endpoint.Endpoint{})
+}
+
+// TestOrderChanges asserts the ordering invariant that keeps a data record from
+// ever existing in the grid without its registry ownership TXT: the ownership
+// TXT is created before its data record and deleted after it, the CREATE ->
+// UPDATE -> DELETE phase order is preserved, and the sort is stable. This is
+// what prevents the half-orphan records (a live A with no owner TXT that
+// external-dns can neither adopt nor delete) that a non-atomic, differently
+// ordered apply leaves behind when interrupted or when a single record fails.
+func TestOrderChanges(t *testing.T) {
+	change := func(action, name, recordType string) *infobloxChange {
+		return &infobloxChange{Action: action, Endpoint: endpoint.NewEndpoint(name, recordType, "")}
+	}
+
+	// deliberately unsafe input order: on create the data record precedes its
+	// ownership TXT, on delete the TXT precedes its data record.
+	changes := []*infobloxChange{
+		change(infobloxCreate, "foo.example.com", endpoint.RecordTypeA),
+		change(infobloxCreate, "extdns-a-foo.example.com", endpoint.RecordTypeTXT),
+		change(infobloxDelete, "extdns-a-bar.example.com", endpoint.RecordTypeTXT),
+		change(infobloxDelete, "bar.example.com", endpoint.RecordTypeA),
+		change(infobloxUpdate, "baz.example.com", endpoint.RecordTypeA),
+	}
+
+	orderChanges(changes)
+
+	got := make([]string, len(changes))
+	for i, c := range changes {
+		got[i] = c.Action + "/" + c.Endpoint.RecordType
+	}
+	assert.Equal(t, []string{
+		infobloxCreate + "/" + endpoint.RecordTypeTXT, // ownership TXT created first
+		infobloxCreate + "/" + endpoint.RecordTypeA,   // then the data record it protects
+		infobloxUpdate + "/" + endpoint.RecordTypeA,
+		infobloxDelete + "/" + endpoint.RecordTypeA,   // data record deleted first
+		infobloxDelete + "/" + endpoint.RecordTypeTXT, // then its ownership TXT
+	}, got)
+}
+
+// TestInfobloxApplyChangesOwnershipOrdering checks that the ordering invariant
+// also holds end-to-end through ApplyChanges/submitChanges: even when
+// external-dns hands the data record before its ownership TXT, the provider
+// writes the TXT first.
+func TestInfobloxApplyChangesOwnershipOrdering(t *testing.T) {
+	client := mockIBConnector{
+		mockInfobloxZones: &[]ibclient.ZoneAuth{
+			createMockInfobloxZone("example.com"),
+		},
+		mockInfobloxObjects: &[]ibclient.IBObject{},
+	}
+
+	providerCfg := newInfobloxProvider(
+		endpoint.NewDomainFilter([]string{""}),
+		provider.NewZoneIDFilter([]string{""}),
+		"",
+		false,
+		false,
+		&client,
+	)
+
+	err := providerCfg.ApplyChanges(context.Background(), &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("created.example.com", endpoint.RecordTypeA, "5.6.7.8"),
+			endpoint.NewEndpoint("extdns-a-created.example.com", endpoint.RecordTypeTXT, "heritage=external-dns"),
+		},
+	})
+	assert.NoError(t, err)
+
+	createdTXT := indexOfRecord(client.createdEndpoints, "extdns-a-created.example.com", endpoint.RecordTypeTXT)
+	createdA := indexOfRecord(client.createdEndpoints, "created.example.com", endpoint.RecordTypeA)
+
+	// both records must actually have been created (guard against a spurious
+	// pass where a missing record yields index -1)
+	assert.GreaterOrEqual(t, createdTXT, 0, "ownership TXT must be created")
+	assert.GreaterOrEqual(t, createdA, 0, "A record must be created")
+	// the ownership TXT is written before the data record it protects
+	assert.Less(t, createdTXT, createdA, "ownership TXT must be created before its A record")
+}
+
+// TestInfobloxApplyChangesCrossZoneOwnershipOrdering checks that the ownership
+// ordering holds even when a data record and its ownership TXT resolve to
+// different Infoblox zones. Here the A record sits at the apex of a delegated
+// sub-zone while its type-prefixed ownership TXT resolves to the parent zone;
+// submitChanges must still write the TXT before the A across the two zones,
+// rather than applying per-zone buckets in random map order.
+func TestInfobloxApplyChangesCrossZoneOwnershipOrdering(t *testing.T) {
+	client := mockIBConnector{
+		mockInfobloxZones: &[]ibclient.ZoneAuth{
+			createMockInfobloxZone("example.com"),
+			createMockInfobloxZone("sub.example.com"),
+		},
+		mockInfobloxObjects: &[]ibclient.IBObject{},
+	}
+
+	providerCfg := newInfobloxProvider(
+		endpoint.NewDomainFilter([]string{""}),
+		provider.NewZoneIDFilter([]string{""}),
+		"",
+		false,
+		false,
+		&client,
+	)
+
+	// guard the premise: the pair must actually split across two zones, else the
+	// test silently degrades into the same-zone case it is meant to cover.
+	zones := zonePointerConverter(*client.mockInfobloxZones)
+	dataZone := providerCfg.findZone(zones, "sub.example.com")
+	txtZone := providerCfg.findZone(zones, "extdns-a-sub.example.com")
+	if assert.NotNil(t, dataZone) && assert.NotNil(t, txtZone) {
+		assert.Equal(t, "sub.example.com", dataZone.Fqdn)
+		assert.Equal(t, "example.com", txtZone.Fqdn, "ownership TXT must resolve to the parent zone")
+	}
+
+	err := providerCfg.ApplyChanges(context.Background(), &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("sub.example.com", endpoint.RecordTypeA, "5.6.7.8"),
+			endpoint.NewEndpoint("extdns-a-sub.example.com", endpoint.RecordTypeTXT, "heritage=external-dns"),
+		},
+	})
+	assert.NoError(t, err)
+
+	createdTXT := indexOfRecord(client.createdEndpoints, "extdns-a-sub.example.com", endpoint.RecordTypeTXT)
+	createdA := indexOfRecord(client.createdEndpoints, "sub.example.com", endpoint.RecordTypeA)
+
+	assert.GreaterOrEqual(t, createdTXT, 0, "ownership TXT must be created")
+	assert.GreaterOrEqual(t, createdA, 0, "A record must be created")
+	assert.Less(t, createdTXT, createdA, "ownership TXT must be created before its A record across zones")
+}
+
+// TestInfobloxApplyChangesAbortsWhenOwnershipTXTFails checks that a failed
+// ownership-TXT create aborts the batch before the data record it protects is
+// written, so the grid is never left with a live data record carrying no owner
+// TXT. This is exactly the half-orphan the ownership ordering exists to prevent,
+// and it only holds if submitChanges stops at the first error instead of
+// continuing best-effort.
+func TestInfobloxApplyChangesAbortsWhenOwnershipTXTFails(t *testing.T) {
+	client := mockIBConnector{
+		mockInfobloxZones: &[]ibclient.ZoneAuth{
+			createMockInfobloxZone("example.com"),
+		},
+		mockInfobloxObjects: &[]ibclient.IBObject{},
+		createObjectErr: func(obj ibclient.IBObject) error {
+			if txt, ok := obj.(*ibclient.RecordTXT); ok && txt.Name != nil && *txt.Name == "extdns-a-created.example.com" {
+				return fmt.Errorf("simulated WAPI failure creating ownership TXT")
+			}
+			return nil
+		},
+	}
+
+	providerCfg := newInfobloxProvider(
+		endpoint.NewDomainFilter([]string{""}),
+		provider.NewZoneIDFilter([]string{""}),
+		"",
+		false,
+		false,
+		&client,
+	)
+
+	err := providerCfg.ApplyChanges(context.Background(), &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("created.example.com", endpoint.RecordTypeA, "5.6.7.8"),
+			endpoint.NewEndpoint("extdns-a-created.example.com", endpoint.RecordTypeTXT, "heritage=external-dns"),
+		},
+	})
+
+	// the failed ownership-TXT create must surface as an error...
+	assert.Error(t, err)
+	// ...and the data record it protects must never have been created, so no
+	// owner-less A record is left behind.
+	assert.Equal(t, -1, indexOfRecord(client.createdEndpoints, "created.example.com", endpoint.RecordTypeA),
+		"A record must not be created after its ownership TXT create failed")
+}
+
+// indexOfRecord returns the position of the first endpoint matching name and
+// recordType, or -1 if it is absent.
+func indexOfRecord(endpoints []*endpoint.Endpoint, name, recordType string) int {
+	for i, ep := range endpoints {
+		if ep.DNSName == name && ep.RecordType == recordType {
+			return i
+		}
+	}
+	return -1
 }
 
 func testInfobloxApplyChangesInternal(t *testing.T, dryRun, createPTR bool, client ibclient.IBConnector) {
