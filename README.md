@@ -49,6 +49,7 @@ DOMAIN_FILTER="cloud.example, 1.2.3.0/24"
 | HEALTH_CHECK_PORT              | 8080          | false    |
 | SERVER_READ_TIMEOUT            |               | false    |
 | SERVER_WRITE_TIMEOUT           |               | false    |
+| SERVER_SHUTDOWN_TIMEOUT        | 0             | false    |
 | DOMAIN_FILTER                  |               | false    |
 | EXCLUDE_DOMAIN_FILTER          |               | false    |
 | REGEXP_DOMAIN_FILTER           |               | false    |
