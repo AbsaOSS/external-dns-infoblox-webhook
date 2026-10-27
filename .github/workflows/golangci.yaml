@@ -27,11 +27,11 @@ jobs:
     name: GolangCI
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: GolangCI
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.10.1
+          version: v2.15.0
           args: --timeout=3m
