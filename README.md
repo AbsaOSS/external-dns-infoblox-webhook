@@ -49,11 +49,20 @@ DOMAIN_FILTER="cloud.example, 1.2.3.0/24"
 | HEALTH_CHECK_PORT              | 8080          | false    |
 | SERVER_READ_TIMEOUT            |               | false    |
 | SERVER_WRITE_TIMEOUT           |               | false    |
+| SERVER_READ_HEADER_TIMEOUT     | 5s            | false    |
+| SERVER_IDLE_TIMEOUT           | 30s           | false    |
+| SERVER_MAX_BODY_SIZE          | 33554432      | false    |
 | DOMAIN_FILTER                  |               | false    |
 | EXCLUDE_DOMAIN_FILTER          |               | false    |
 | REGEXP_DOMAIN_FILTER           |               | false    |
 | REGEXP_DOMAIN_FILTER_EXCLUSION |               | false    |
 | REGEXP_NAME_FILTER             |               | false    |
+
+`SERVER_READ_HEADER_TIMEOUT` and `SERVER_IDLE_TIMEOUT` accept Go duration values
+(for example, `5s` or `1m`). The read-header timeout limits how long the server
+waits to read request headers; the idle timeout limits how long an idle
+keep-alive connection remains open. `SERVER_MAX_BODY_SIZE` sets the maximum
+request body size in bytes (32 MiB by default).
 
 
 ## Contribution
