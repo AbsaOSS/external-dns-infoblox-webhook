@@ -7,7 +7,7 @@ require (
 	github.com/infobloxopen/infoblox-go-client/v2 v2.12.0
 	github.com/miekg/dns v1.1.73
 	github.com/prometheus/client_golang v1.24.1
-	github.com/sirupsen/logrus v1.9.4
+	github.com/sirupsen/logrus v1.10.2
 	github.com/stretchr/testify v1.12.1
 	sigs.k8s.io/external-dns v0.21.0
 )
