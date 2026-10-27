@@ -49,7 +49,16 @@ func NewServer() *WebhookServer {
 // - /records (POST): applies the changes
 // - /adjustendpoints (POST): executes the AdjustEndpoints method
 func (wh *WebhookServer) Start(config configuration.Config, p provider.Provider) {
-	api.StartHTTPApi(p, wh.Channel, 0, 0, fmt.Sprintf("%s:%d", config.ServerHost, config.ServerPort))
+	api.StartHTTPApi(api.ServerOptions{
+		Provider:          p,
+		StartedChan:       wh.Channel,
+		ProviderPort:      fmt.Sprintf("%s:%d", config.ServerHost, config.ServerPort),
+		ReadTimeout:       config.ServerReadTimeout,
+		WriteTimeout:      config.ServerWriteTimeout,
+		ReadHeaderTimeout: config.ServerReadHeaderTimeout,
+		IdleTimeout:       config.ServerIdleTimeout,
+		MaxBodySize:       config.ServerMaxBodySize,
+	})
 }
 
 func (wh *WebhookServer) StartHealth(config configuration.Config) {

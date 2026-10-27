@@ -27,16 +27,19 @@ import (
 
 // Config struct for configuration environmental variables
 type Config struct {
-	ServerHost           string        `name:"server-host" env:"SERVER_HOST" validate:"required" default:"127.0.0.1"`
-	ServerPort           int           `name:"server-port" env:"SERVER_PORT" validate:"required" default:"8888"`
-	HealthCheckPort      int           `name:"health-check-port" env:"HEALTH_CHECK_PORT" validate:"required" default:"8080"`
-	ServerReadTimeout    time.Duration `name:"server-read-timeout" env:"SERVER_READ_TIMEOUT"`
-	ServerWriteTimeout   time.Duration `name:"server-write-timeout" env:"SERVER_WRITE_TIMEOUT"`
-	DomainFilter         []string      `name:"domain-filter" env:"DOMAIN_FILTER" default:""`
-	ExcludeDomains       []string      `name:"exclude-domain-filter" env:"EXCLUDE_DOMAIN_FILTER" default:""`
-	RegexDomainFilter    string        `name:"regex-domain-filter" env:"REGEXP_DOMAIN_FILTER" default:""`
-	RegexDomainExclusion string        `name:"regex-domain-filter-exclusion" env:"REGEXP_DOMAIN_FILTER_EXCLUSION" default:""`
-	RegexNameFilter      string        `name:"regex-name-filter" env:"REGEXP_NAME_FILTER" default:""`
+	ServerHost              string        `name:"server-host" env:"SERVER_HOST" validate:"required" default:"127.0.0.1"`
+	ServerPort              int           `name:"server-port" env:"SERVER_PORT" validate:"required" default:"8888"`
+	HealthCheckPort         int           `name:"health-check-port" env:"HEALTH_CHECK_PORT" validate:"required" default:"8080"`
+	ServerReadTimeout       time.Duration `name:"server-read-timeout" env:"SERVER_READ_TIMEOUT"`
+	ServerWriteTimeout      time.Duration `name:"server-write-timeout" env:"SERVER_WRITE_TIMEOUT"`
+	ServerReadHeaderTimeout time.Duration `name:"server-read-header-timeout" env:"SERVER_READ_HEADER_TIMEOUT" default:"5s"`
+	ServerIdleTimeout       time.Duration `name:"server-idle-timeout" env:"SERVER_IDLE_TIMEOUT" default:"30s"`
+	ServerMaxBodySize       int64         `name:"server-max-body-size" env:"SERVER_MAX_BODY_SIZE" default:"33554432"`
+	DomainFilter            []string      `name:"domain-filter" env:"DOMAIN_FILTER" default:""`
+	ExcludeDomains          []string      `name:"exclude-domain-filter" env:"EXCLUDE_DOMAIN_FILTER" default:""`
+	RegexDomainFilter       string        `name:"regex-domain-filter" env:"REGEXP_DOMAIN_FILTER" default:""`
+	RegexDomainExclusion    string        `name:"regex-domain-filter-exclusion" env:"REGEXP_DOMAIN_FILTER_EXCLUSION" default:""`
+	RegexNameFilter         string        `name:"regex-name-filter" env:"REGEXP_NAME_FILTER" default:""`
 }
 
 // Init sets up configuration by reading set environmental variables
