@@ -49,6 +49,12 @@ const (
 // given status code and body, and returns a Provider wired to a real
 // infoblox-go-client connector pointed at it. The returned counter records how
 // many HTTP requests the stub received, which is what pins the retry behaviour.
+
+const (
+	testWAPIVersion = "2.3.1"
+	testZone        = "example.com"
+)
+
 func newStubGrid(t *testing.T, status int, body string) (*Provider, *int64) {
 	t.Helper()
 
@@ -67,7 +73,7 @@ func newStubGrid(t *testing.T, status int, body string) (*Provider, *int64) {
 		Scheme:  "http",
 		Host:    stubURL.Hostname(),
 		Port:    stubURL.Port(),
-		Version: "2.3.1",
+		Version: testWAPIVersion,
 	}
 	authCfg := ibclient.AuthConfig{Username: testWAPIUser, Password: testWAPIPassword}
 	requestBuilder, err := ibclient.NewWapiRequestBuilder(hostCfg, authCfg)
@@ -78,7 +84,7 @@ func newStubGrid(t *testing.T, status int, body string) (*Provider, *int64) {
 
 	return &Provider{
 		client:       client,
-		domainFilter: endpoint.NewDomainFilter([]string{"example.com"}),
+		domainFilter: endpoint.NewDomainFilter([]string{testZone}),
 		config:       &StartupConfig{View: "default", Username: testWAPIUser, Password: testWAPIPassword},
 	}, &requests
 }
@@ -285,11 +291,11 @@ func TestRecordsLogsTransientFailureAndRetries(t *testing.T) {
 func TestApplyChangesLogsRejectedWrite(t *testing.T) {
 	hook := captureLogs(t)
 	client := &mockIBConnector{
-		mockInfobloxZones:   &[]ibclient.ZoneAuth{createMockInfobloxZone("example.com")},
+		mockInfobloxZones:   &[]ibclient.ZoneAuth{createMockInfobloxZone(testZone)},
 		mockInfobloxObjects: &[]ibclient.IBObject{},
 		createError:         errors.New("WAPI request error: 403('403 Forbidden')\nContents:\ninsufficient privileges\n"),
 	}
-	p := newInfobloxProvider(endpoint.NewDomainFilter([]string{"example.com"}),
+	p := newInfobloxProvider(endpoint.NewDomainFilter([]string{testZone}),
 		provider.NewZoneIDFilter([]string{""}), "", false, false, client)
 
 	err := p.ApplyChanges(context.TODO(), &plan.Changes{
@@ -315,7 +321,7 @@ func TestApplyChangesLogsRejectedWrite(t *testing.T) {
 func TestChangesByZoneWarnsOnUnmatchedRecord(t *testing.T) {
 	hook := captureLogs(t)
 	client := &mockIBConnector{}
-	p := newInfobloxProvider(endpoint.NewDomainFilter([]string{"example.com"}),
+	p := newInfobloxProvider(endpoint.NewDomainFilter([]string{testZone}),
 		provider.NewZoneIDFilter([]string{""}), "", false, false, client)
 
 	p.ChangesByZone(nil, []*infobloxChange{{
