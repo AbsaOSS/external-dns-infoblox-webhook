@@ -5,10 +5,14 @@ Infoblox provider based on in-tree provider for ExternalDNS. Supported records:
 | Record Type | Status     |
 |-------------|------------|
 | A           | supported  |
+| AAAA        | supported  |
 | CNAME       | supported  |
 | TXT         | supported  |
 | PTR         | not tested |
 
+
+See [docs/examples.md](docs/examples.md) for worked examples of creating records with the
+`DNSEndpoint` CRD and with Service/Ingress annotations.
 
 ## Quick start
 
@@ -26,11 +30,27 @@ To run the provider, you must provide the following Environment Variables:
 | INFOBLOX_SSL_VERIFY                 | true          | false    |
 | INFOBLOX_DRY_RUN                    | false         | false    |
 | INFOBLOX_VIEW                       | default       | false    |
+| INFOBLOX_WAPI_BASE_PATH             |               | false    |
 | INFOBLOX_MAX_RESULTS                | 1500          | false    |
 | INFOBLOX_CREATE_PTR                 | false         | false    |
 | INFOBLOX_DEFAULT_TTL                | 300           | false    |
 | INFOBLOX_USE_TTL                    | true          | false    |
 | INFOBLOX_EXTENSIBLE_ATTRIBUTES_JSON | {}            | false    |
+
+### INFOBLOX_WAPI_BASE_PATH
+
+By default all WAPI requests go to `https://<host>:<port>/wapi/v<version>/...`. If the grid is
+reached through a reverse proxy or an API gateway that serves NIOS under an additional path
+prefix, set `INFOBLOX_WAPI_BASE_PATH` to that prefix:
+
+```bash
+# requests become https://<host>:<port>/nios/wapi/v<version>/...
+INFOBLOX_WAPI_BASE_PATH=nios
+```
+
+Nested prefixes are supported (`INFOBLOX_WAPI_BASE_PATH=proxy/nios`). Leading and trailing
+slashes are optional and are stripped. Leaving the variable unset (or setting it to `/` or an
+empty/blank value) keeps the default `/wapi/v<version>` paths unchanged.
 
 ### INFOBLOX_CREATE_PTR
 
@@ -49,12 +69,21 @@ DOMAIN_FILTER="cloud.example, 1.2.3.0/24"
 | HEALTH_CHECK_PORT              | 8080          | false    |
 | SERVER_READ_TIMEOUT            |               | false    |
 | SERVER_WRITE_TIMEOUT           |               | false    |
+| SERVER_READ_HEADER_TIMEOUT     | 5s            | false    |
+| SERVER_IDLE_TIMEOUT            | 30s           | false    |
+| SERVER_MAX_BODY_SIZE           | 33554432      | false    |
 | SERVER_SHUTDOWN_TIMEOUT        | 0             | false    |
 | DOMAIN_FILTER                  |               | false    |
 | EXCLUDE_DOMAIN_FILTER          |               | false    |
 | REGEXP_DOMAIN_FILTER           |               | false    |
 | REGEXP_DOMAIN_FILTER_EXCLUSION |               | false    |
 | REGEXP_NAME_FILTER             |               | false    |
+
+`SERVER_READ_HEADER_TIMEOUT` and `SERVER_IDLE_TIMEOUT` accept Go duration values
+(for example, `5s` or `1m`). The read-header timeout limits how long the server
+waits to read request headers; the idle timeout limits how long an idle
+keep-alive connection remains open. `SERVER_MAX_BODY_SIZE` sets the maximum
+request body size in bytes (32 MiB by default).
 
 
 ## Contribution

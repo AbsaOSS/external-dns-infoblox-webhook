@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -31,7 +32,6 @@ import (
 	"testing"
 
 	ibclient "github.com/infobloxopen/infoblox-go-client/v2"
-	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 
 	"sigs.k8s.io/external-dns/endpoint"
@@ -45,8 +45,12 @@ type mockIBConnector struct {
 	createdEndpoints    []*endpoint.Endpoint
 	deletedEndpoints    []*endpoint.Endpoint
 	updatedEndpoints    []*endpoint.Endpoint
+	updatedRefs         []string
 	getObjectRequests   []*getObjectRequest
 	requestBuilder      ExtendedRequestBuilder
+	// createError, when set, makes CreateObject fail. It simulates a grid that
+	// rejects a write, e.g. because the WAPI user lacks the permission.
+	createError error
 }
 
 type getObjectRequest struct {
@@ -59,6 +63,7 @@ type getObjectRequest struct {
 
 const (
 	recordA     = "record:a"
+	recordAaaa  = "record:aaaa"
 	recordCname = "record:cname"
 	recordNs    = "record:ns"
 	recordHost  = "record:host"
@@ -80,6 +85,16 @@ func (req *getObjectRequest) ExpectNotRequestURLQueryParam(t *testing.T, name st
 	}
 
 	return req
+}
+
+func requestMatchesURLRegex(req *getObjectRequest, queryParam string, value string) bool {
+	pattern := req.url.Query().Get(queryParam)
+	if pattern == "" {
+		return false
+	}
+
+	matched, err := regexp.MatchString(pattern, value)
+	return err == nil && matched
 }
 
 // nolint: unparam
@@ -119,11 +134,26 @@ func (client *mockIBConnector) verifyNoMoreGetObjectRequests(t *testing.T) {
 	}
 }
 
+func (client *mockIBConnector) countGetObjectRequests(obj string) int {
+	count := 0
+	for _, req := range client.getObjectRequests {
+		if req.obj == obj {
+			count++
+		}
+	}
+
+	return count
+}
+
 func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, err error) {
+	if client.createError != nil {
+		return "", client.createError
+	}
+	var newEndpoints []*endpoint.Endpoint
 	switch obj.ObjectType() {
 	case recordA:
-		client.createdEndpoints = append(
-			client.createdEndpoints,
+		newEndpoints = append(
+			newEndpoints,
 			endpoint.NewEndpoint(
 				*obj.(*ibclient.RecordA).Name,
 				endpoint.RecordTypeA,
@@ -132,9 +162,31 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 		)
 		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.RecordA).Name)), *obj.(*ibclient.RecordA).Name)
 		obj.(*ibclient.RecordA).Ref = ref
+	case recordAaaa:
+		newEndpoints = append(
+			newEndpoints,
+			endpoint.NewEndpoint(
+				*obj.(*ibclient.RecordAAAA).Name,
+				endpoint.RecordTypeAAAA,
+				*obj.(*ibclient.RecordAAAA).Ipv6Addr,
+			),
+		)
+		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.RecordAAAA).Name)), *obj.(*ibclient.RecordAAAA).Name)
+		obj.(*ibclient.RecordAAAA).Ref = ref
 	case recordCname:
-		client.createdEndpoints = append(
-			client.createdEndpoints,
+		// Infoblox rejects a second record:cname with the same name with an
+		// IBDataConflictError. Emulate that so tests catch create-instead-of-update
+		// regressions (see issue #63).
+		for _, existing := range *client.mockInfobloxObjects {
+			if existing.ObjectType() != recordCname {
+				continue
+			}
+			if AsString(existing.(*ibclient.RecordCNAME).Name) == AsString(obj.(*ibclient.RecordCNAME).Name) {
+				return "", fmt.Errorf("the record '%s' already exists", AsString(obj.(*ibclient.RecordCNAME).Name))
+			}
+		}
+		newEndpoints = append(
+			newEndpoints,
 			endpoint.NewEndpoint(
 				*obj.(*ibclient.RecordCNAME).Name,
 				endpoint.RecordTypeCNAME,
@@ -144,8 +196,8 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.RecordCNAME).Name)), *obj.(*ibclient.RecordCNAME).Name)
 		obj.(*ibclient.RecordCNAME).Ref = ref
 	case recordNs:
-		client.createdEndpoints = append(
-			client.createdEndpoints,
+		newEndpoints = append(
+			newEndpoints,
 			endpoint.NewEndpoint(
 				obj.(*ibclient.RecordNS).Name,
 				endpoint.RecordTypeNS,
@@ -156,8 +208,8 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 		obj.(*ibclient.RecordNS).Ref = ref
 	case recordHost:
 		for _, i := range obj.(*ibclient.HostRecord).Ipv4Addrs {
-			client.createdEndpoints = append(
-				client.createdEndpoints,
+			newEndpoints = append(
+				newEndpoints,
 				endpoint.NewEndpoint(
 					*obj.(*ibclient.HostRecord).Name,
 					endpoint.RecordTypeA,
@@ -168,8 +220,8 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.HostRecord).Name)), *obj.(*ibclient.HostRecord).Name)
 		obj.(*ibclient.HostRecord).Ref = ref
 	case recordTxt:
-		client.createdEndpoints = append(
-			client.createdEndpoints,
+		newEndpoints = append(
+			newEndpoints,
 			endpoint.NewEndpoint(
 				*obj.(*ibclient.RecordTXT).Name,
 				endpoint.RecordTypeTXT,
@@ -179,8 +231,8 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 		obj.(*ibclient.RecordTXT).Ref = ref
 		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.RecordTXT).Name)), *obj.(*ibclient.RecordTXT).Name)
 	case recordPtr:
-		client.createdEndpoints = append(
-			client.createdEndpoints,
+		newEndpoints = append(
+			newEndpoints,
 			endpoint.NewEndpoint(
 				*obj.(*ibclient.RecordPTR).PtrdName,
 				endpoint.RecordTypePTR,
@@ -188,17 +240,99 @@ func (client *mockIBConnector) CreateObject(obj ibclient.IBObject) (ref string, 
 			),
 		)
 		obj.(*ibclient.RecordPTR).Ref = ref
-		reverseAddr, err := dns.ReverseAddr(*obj.(*ibclient.RecordPTR).Ipv4Addr)
 		if err != nil {
 			return ref, fmt.Errorf("unable to create reverse addr from %s", *obj.(*ibclient.RecordPTR).Ipv4Addr)
 		}
-		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.RecordPTR).PtrdName)), reverseAddr)
+		ref = fmt.Sprintf("%s/%s:%s/default", obj.ObjectType(), base64.StdEncoding.EncodeToString([]byte(*obj.(*ibclient.RecordPTR).PtrdName)), *obj.(*ibclient.RecordPTR).PtrdName)
 	}
+	has, err := client.hasObject(obj, ref)
+	if err != nil {
+		return ref, err
+	}
+	if has {
+		return ref, errors.New("object already exists")
+	}
+	client.createdEndpoints = append(client.createdEndpoints, newEndpoints...)
+
 	*client.mockInfobloxObjects = append(
 		*client.mockInfobloxObjects,
 		obj,
 	)
 	return ref, nil
+}
+
+func (client *mockIBConnector) hasObject(obj ibclient.IBObject, ref string) (result bool, err error) {
+	result = false
+
+	switch obj.ObjectType() {
+	case recordA:
+		var res []ibclient.RecordA
+		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
+		if err != nil || len(res) == 0 {
+			if isNotFoundError(err) {
+				return false, nil
+			}
+			return result, err
+		}
+	case recordAaaa:
+		var res []ibclient.RecordAAAA
+		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
+		if err != nil || len(res) == 0 {
+			if isNotFoundError(err) {
+				return false, nil
+			}
+			return result, err
+		}
+	case recordCname:
+		var res []ibclient.RecordCNAME
+		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
+		if err != nil || len(res) == 0 {
+			if isNotFoundError(err) {
+				return false, nil
+			}
+			return result, err
+		}
+	case recordHost:
+		var res []ibclient.HostRecord
+		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
+		if err != nil || len(res) == 0 {
+			if isNotFoundError(err) {
+				return false, nil
+			}
+			return result, err
+		}
+	case recordTxt:
+		var res []ibclient.RecordTXT
+		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
+		if err != nil || len(res) == 0 {
+			if isNotFoundError(err) {
+				return false, nil
+			}
+			return result, err
+		}
+	case recordPtr:
+		var res []ibclient.RecordPTR
+		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
+		if err != nil || len(res) == 0 {
+			if isNotFoundError(err) {
+				return false, nil
+			}
+			return result, err
+		}
+	case recordNs:
+		var res []ibclient.RecordNS
+		err = client.GetObject(obj, ref, &ibclient.QueryParams{}, &res)
+		if err != nil || len(res) == 0 {
+			if isNotFoundError(err) {
+				return false, nil
+			}
+			return result, err
+		}
+	case "zone_auth":
+		return true, nil
+	}
+
+	return true, nil
 }
 
 // nolint: gocyclo
@@ -208,6 +342,8 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 	case *pagingResponseStruct[ibclient.ZoneAuth]:
 		isPagingType = true
 	case *pagingResponseStruct[ibclient.RecordA]:
+		isPagingType = true
+	case *pagingResponseStruct[ibclient.RecordAAAA]:
 		isPagingType = true
 	case *pagingResponseStruct[ibclient.HostRecord]:
 		isPagingType = true
@@ -249,6 +385,10 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 					continue
 				}
 				if !strings.Contains(req.queryParams, fmt.Sprintf("ipv4addr:%s name:%s", AsString(object.(*ibclient.RecordA).Ipv4Addr), AsString(object.(*ibclient.RecordA).Name))) {
+					if requestMatchesURLRegex(&req, "name~", AsString(object.(*ibclient.RecordA).Name)) {
+						result = append(result, *object.(*ibclient.RecordA))
+						continue
+					}
 					if !strings.Contains(req.queryParams, fmt.Sprintf("zone:%s", object.(*ibclient.RecordA).Zone)) {
 						continue
 					}
@@ -259,7 +399,45 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 		if isPagingType {
 			res.(*pagingResponseStruct[ibclient.RecordA]).Result = result
 		} else {
+			if len(result) == 0 {
+				return ibclient.NewNotFoundError("not found")
+			}
 			*res.(*[]ibclient.RecordA) = result
+		}
+	case recordAaaa:
+		var result []ibclient.RecordAAAA
+		for _, object := range *client.mockInfobloxObjects {
+			if object.ObjectType() == recordAaaa {
+				if ref == object.(*ibclient.RecordAAAA).Ref {
+					result = append(result, *object.(*ibclient.RecordAAAA))
+				}
+				if ref != "" &&
+					ref != object.(*ibclient.RecordAAAA).Ref {
+					continue
+				}
+				if AsString(obj.(*ibclient.RecordAAAA).Name) != "" &&
+					AsString(obj.(*ibclient.RecordAAAA).Name) != AsString(object.(*ibclient.RecordAAAA).Name) {
+					continue
+				}
+				if !strings.Contains(req.queryParams, fmt.Sprintf("ipv6addr:%s name:%s", AsString(object.(*ibclient.RecordAAAA).Ipv6Addr), AsString(object.(*ibclient.RecordAAAA).Name))) {
+					if requestMatchesURLRegex(&req, "name~", AsString(object.(*ibclient.RecordAAAA).Name)) {
+						result = append(result, *object.(*ibclient.RecordAAAA))
+						continue
+					}
+					if !strings.Contains(req.queryParams, fmt.Sprintf("zone:%s", object.(*ibclient.RecordAAAA).Zone)) {
+						continue
+					}
+				}
+				result = append(result, *object.(*ibclient.RecordAAAA))
+			}
+		}
+		if isPagingType {
+			res.(*pagingResponseStruct[ibclient.RecordAAAA]).Result = result
+		} else {
+			if len(result) == 0 {
+				return ibclient.NewNotFoundError("not found")
+			}
+			*res.(*[]ibclient.RecordAAAA) = result
 		}
 	case recordCname:
 		var result []ibclient.RecordCNAME
@@ -277,6 +455,10 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 					continue
 				}
 				if !strings.Contains(req.queryParams, fmt.Sprintf("name:%s", AsString(object.(*ibclient.RecordCNAME).Name))) {
+					if requestMatchesURLRegex(&req, "name~", AsString(object.(*ibclient.RecordCNAME).Name)) {
+						result = append(result, *object.(*ibclient.RecordCNAME))
+						continue
+					}
 					if !strings.Contains(req.queryParams, fmt.Sprintf("zone:%s", object.(*ibclient.RecordCNAME).Zone)) {
 						continue
 					}
@@ -287,6 +469,9 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 		if isPagingType {
 			res.(*pagingResponseStruct[ibclient.RecordCNAME]).Result = result
 		} else {
+			if len(result) == 0 {
+				return ibclient.NewNotFoundError("not found")
+			}
 			*res.(*[]ibclient.RecordCNAME) = result
 		}
 	case recordNs:
@@ -315,6 +500,9 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 		if isPagingType {
 			res.(*pagingResponseStruct[ibclient.RecordNS]).Result = result
 		} else {
+			if len(result) == 0 {
+				return ibclient.NewNotFoundError("not found")
+			}
 			*res.(*[]ibclient.RecordNS) = result
 		}
 	case recordHost:
@@ -332,7 +520,15 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 					AsString(obj.(*ibclient.HostRecord).Name) != AsString(object.(*ibclient.HostRecord).Name) {
 					continue
 				}
-				if !strings.Contains(req.queryParams, fmt.Sprintf("ipv4addrs:%s name:%s", AsString(object.(*ibclient.HostRecord).Ipv4Addrs[0].Ipv4Addr), AsString(object.(*ibclient.HostRecord).Name))) {
+				hostIpv4Addr := ""
+				if len(object.(*ibclient.HostRecord).Ipv4Addrs) > 0 {
+					hostIpv4Addr = AsString(object.(*ibclient.HostRecord).Ipv4Addrs[0].Ipv4Addr)
+				}
+				if !strings.Contains(req.queryParams, fmt.Sprintf("ipv4addrs:%s name:%s", hostIpv4Addr, AsString(object.(*ibclient.HostRecord).Name))) {
+					if requestMatchesURLRegex(&req, "name~", AsString(object.(*ibclient.HostRecord).Name)) {
+						result = append(result, *object.(*ibclient.HostRecord))
+						continue
+					}
 					if !strings.Contains(req.queryParams, fmt.Sprintf("zone:%s", object.(*ibclient.HostRecord).Zone)) {
 						continue
 					}
@@ -343,6 +539,9 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 		if isPagingType {
 			res.(*pagingResponseStruct[ibclient.HostRecord]).Result = result
 		} else {
+			if len(result) == 0 {
+				return ibclient.NewNotFoundError("not found")
+			}
 			*res.(*[]ibclient.HostRecord) = result
 		}
 	case recordTxt:
@@ -361,6 +560,10 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 					continue
 				}
 				if !strings.Contains(req.queryParams, fmt.Sprintf("text:%s name:%s", AsString(object.(*ibclient.RecordTXT).Text), AsString(object.(*ibclient.RecordTXT).Name))) {
+					if requestMatchesURLRegex(&req, "name~", AsString(object.(*ibclient.RecordTXT).Name)) {
+						result = append(result, *object.(*ibclient.RecordTXT))
+						continue
+					}
 					if !strings.Contains(req.queryParams, fmt.Sprintf("zone:%s", object.(*ibclient.RecordTXT).Zone)) {
 						continue
 					}
@@ -371,12 +574,15 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 		if isPagingType {
 			res.(*pagingResponseStruct[ibclient.RecordTXT]).Result = result
 		} else {
+			if len(result) == 0 {
+				return ibclient.NewNotFoundError("not found")
+			}
 			*res.(*[]ibclient.RecordTXT) = result
 		}
 	case recordPtr:
 		var result []ibclient.RecordPTR
 		for _, object := range *client.mockInfobloxObjects {
-			if object.ObjectType() == "record:ptr" {
+			if object.ObjectType() == recordPtr {
 				if ref == object.(*ibclient.RecordPTR).Ref {
 					result = append(result, *object.(*ibclient.RecordPTR))
 				}
@@ -388,7 +594,7 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 					AsString(obj.(*ibclient.RecordPTR).PtrdName) != AsString(object.(*ibclient.RecordPTR).PtrdName) {
 					continue
 				}
-				if !strings.Contains(req.queryParams, fmt.Sprintf("name:%s", AsString(object.(*ibclient.RecordPTR).Name))) {
+				if !strings.Contains(req.queryParams, fmt.Sprintf("ipv4addr:%s ptrdname:%s", AsString(object.(*ibclient.RecordPTR).Ipv4Addr), AsString(object.(*ibclient.RecordPTR).PtrdName))) {
 					if !strings.Contains(req.queryParams, fmt.Sprintf("zone:%s", object.(*ibclient.RecordPTR).Zone)) {
 						continue
 					}
@@ -399,13 +605,26 @@ func (client *mockIBConnector) GetObject(obj ibclient.IBObject, ref string, quer
 		if isPagingType {
 			res.(*pagingResponseStruct[ibclient.RecordPTR]).Result = result
 		} else {
+			if len(result) == 0 {
+				return ibclient.NewNotFoundError("not found")
+			}
 			*res.(*[]ibclient.RecordPTR) = result
 		}
 	case "zone_auth":
+		zones := *client.mockInfobloxZones
+		if req.url.Query().Get("fqdn~") != "" {
+			filteredZones := make([]ibclient.ZoneAuth, 0, len(zones))
+			for _, zone := range zones {
+				if requestMatchesURLRegex(&req, "fqdn~", zone.Fqdn) {
+					filteredZones = append(filteredZones, zone)
+				}
+			}
+			zones = filteredZones
+		}
 		if isPagingType {
-			res.(*pagingResponseStruct[ibclient.ZoneAuth]).Result = *client.mockInfobloxZones
+			res.(*pagingResponseStruct[ibclient.ZoneAuth]).Result = zones
 		} else {
-			*res.(*[]ibclient.ZoneAuth) = *client.mockInfobloxZones
+			*res.(*[]ibclient.ZoneAuth) = zones
 		}
 	}
 	return
@@ -431,6 +650,21 @@ func (client *mockIBConnector) DeleteObject(ref string) (refRes string, err erro
 				endpoint.NewEndpoint(
 					*record.Name,
 					endpoint.RecordTypeA,
+					"",
+				),
+			)
+		}
+	case "record:aaaa":
+		var records []ibclient.RecordAAAA
+		obj := ibclient.NewEmptyRecordAAAA()
+		obj.Name = &result[2]
+		client.GetObject(obj, ref, nil, &records) // nolint: errcheck
+		for _, record := range records {
+			client.deletedEndpoints = append(
+				client.deletedEndpoints,
+				endpoint.NewEndpoint(
+					*record.Name,
+					endpoint.RecordTypeAAAA,
 					"",
 				),
 			)
@@ -515,56 +749,66 @@ func (client *mockIBConnector) DeleteObject(ref string) (refRes string, err erro
 }
 
 func (client *mockIBConnector) UpdateObject(obj ibclient.IBObject, ref string) (refRes string, err error) {
+	client.updatedRefs = append(client.updatedRefs, ref)
 	switch obj.ObjectType() {
-	case "record:a":
+	case recordA:
 		client.updatedEndpoints = append(
 			client.updatedEndpoints,
 			endpoint.NewEndpoint(
 				*obj.(*ibclient.RecordA).Name,
-				*obj.(*ibclient.RecordA).Ipv4Addr,
 				endpoint.RecordTypeA,
+				*obj.(*ibclient.RecordA).Ipv4Addr,
 			),
 		)
-	case "record:cname":
+	case recordAaaa:
+		client.updatedEndpoints = append(
+			client.updatedEndpoints,
+			endpoint.NewEndpoint(
+				*obj.(*ibclient.RecordAAAA).Name,
+				endpoint.RecordTypeAAAA,
+				*obj.(*ibclient.RecordAAAA).Ipv6Addr,
+			),
+		)
+	case recordCname:
 		client.updatedEndpoints = append(
 			client.updatedEndpoints,
 			endpoint.NewEndpoint(
 				*obj.(*ibclient.RecordCNAME).Name,
-				*obj.(*ibclient.RecordCNAME).Canonical,
 				endpoint.RecordTypeCNAME,
+				*obj.(*ibclient.RecordCNAME).Canonical,
 			),
 		)
-	case "record:ns":
+	case recordNs:
 		client.updatedEndpoints = append(
 			client.updatedEndpoints,
 			endpoint.NewEndpoint(
 				obj.(*ibclient.RecordNS).Name,
-				*obj.(*ibclient.RecordNS).Nameserver,
 				endpoint.RecordTypeNS,
+				*obj.(*ibclient.RecordNS).Nameserver,
 			),
 		)
-	case "record:host":
+	case recordHost:
 		for _, i := range obj.(*ibclient.HostRecord).Ipv4Addrs {
 			client.updatedEndpoints = append(
 				client.updatedEndpoints,
 				endpoint.NewEndpoint(
 					*obj.(*ibclient.HostRecord).Name,
-					*i.Ipv4Addr,
 					endpoint.RecordTypeA,
+					*i.Ipv4Addr,
 				),
 			)
 		}
-	case "record:txt":
+	case recordTxt:
 		client.updatedEndpoints = append(
 			client.updatedEndpoints,
 			endpoint.NewEndpoint(
 				*obj.(*ibclient.RecordTXT).Name,
-				*obj.(*ibclient.RecordTXT).Text,
 				endpoint.RecordTypeTXT,
+				*obj.(*ibclient.RecordTXT).Text,
 			),
 		)
 	}
-	return "", nil
+	return ref, nil
 }
 
 func createMockInfobloxZone(fqdn string) ibclient.ZoneAuth {
@@ -581,6 +825,13 @@ func createMockInfobloxObjectWithZone(name, recordType, value, zone string) ibcl
 		obj.Name = &name
 		obj.Ref = ref
 		obj.Ipv4Addr = &value
+		obj.Zone = zone
+		return obj
+	case endpoint.RecordTypeAAAA:
+		obj := ibclient.NewEmptyRecordAAAA()
+		obj.Name = &name
+		obj.Ref = ref
+		obj.Ipv6Addr = &value
 		obj.Zone = zone
 		return obj
 	case endpoint.RecordTypeCNAME:
@@ -636,6 +887,12 @@ func createMockInfobloxObject(name, recordType, value string) ibclient.IBObject 
 		obj.Ref = ref
 		obj.Ipv4Addr = &value
 		return obj
+	case endpoint.RecordTypeAAAA:
+		obj := ibclient.NewEmptyRecordAAAA()
+		obj.Name = &name
+		obj.Ref = ref
+		obj.Ipv6Addr = &value
+		return obj
 	case endpoint.RecordTypeCNAME:
 		obj := ibclient.NewEmptyRecordCNAME()
 		obj.Name = &name
@@ -675,6 +932,22 @@ func createMockInfobloxObject(name, recordType, value string) ibclient.IBObject 
 	return nil
 }
 
+// createMockInfobloxHostObjectWithZone builds a host record holding an
+// arbitrary number of IPv4 and IPv6 addresses.
+func createMockInfobloxHostObjectWithZone(name string, ipv4Addrs, ipv6Addrs []string, zone string) ibclient.IBObject {
+	obj := ibclient.NewEmptyHostRecord()
+	obj.Name = &name
+	obj.Ref = fmt.Sprintf("record:host/%s:%s/default", base64.StdEncoding.EncodeToString([]byte(name)), name)
+	obj.Zone = zone
+	for _, ipv4Addr := range ipv4Addrs {
+		obj.Ipv4Addrs = append(obj.Ipv4Addrs, ibclient.HostRecordIpv4Addr{Ipv4Addr: &ipv4Addr})
+	}
+	for _, ipv6Addr := range ipv6Addrs {
+		obj.Ipv6Addrs = append(obj.Ipv6Addrs, ibclient.HostRecordIpv6Addr{Ipv6Addr: &ipv6Addr})
+	}
+	return obj
+}
+
 // nolint: unparam
 func newInfobloxProvider(domainFilter *endpoint.DomainFilter, _ provider.ZoneIDFilter, view string, dryRun bool, createPTR bool, client ibclient.IBConnector) *Provider {
 	return &Provider{
@@ -709,7 +982,14 @@ func TestInfobloxRecords(t *testing.T) {
 			createMockInfobloxObjectWithZone("existing.example.com", endpoint.RecordTypeA, "124.1.1.1", "example.com"),
 			createMockInfobloxObjectWithZone("existing.example.com", endpoint.RecordTypeA, "124.1.1.2", "example.com"),
 			createMockInfobloxObjectWithZone("existing.example.com", endpoint.RecordTypeTXT, "heritage=external-dns,external-dns/owner=existing", "example.com"),
+			createMockInfobloxObjectWithZone("ipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1", "example.com"),
+			createMockInfobloxObjectWithZone("multipleipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::2", "example.com"),
+			createMockInfobloxObjectWithZone("multipleipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1", "example.com"),
+			// Infoblox may return the same target twice, it must be de-duplicated
+			createMockInfobloxObjectWithZone("multipleipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1", "example.com"),
 			createMockInfobloxObjectWithZone("host.example.com", "HOST", "125.1.1.1", "example.com"),
+			createMockInfobloxHostObjectWithZone("dualstack.example.com", []string{"125.1.1.2"}, []string{"2001:db8::125"}, "example.com"),
+			createMockInfobloxHostObjectWithZone("ipv6only.example.com", nil, []string{"2001:db8::126"}, "example.com"),
 		},
 	}
 
@@ -731,7 +1011,12 @@ func TestInfobloxRecords(t *testing.T) {
 		endpoint.NewEndpoint("multiple.example.com", endpoint.RecordTypeTXT, "heritage=external-dns,external-dns/owner=default"),
 		endpoint.NewEndpoint("existing.example.com", endpoint.RecordTypeA, "124.1.1.1", "124.1.1.2"),
 		endpoint.NewEndpoint("existing.example.com", endpoint.RecordTypeTXT, "heritage=external-dns,external-dns/owner=existing"),
+		endpoint.NewEndpoint("ipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1"),
+		endpoint.NewEndpoint("multipleipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1", "2001:db8::2"),
 		endpoint.NewEndpoint("host.example.com", endpoint.RecordTypeA, "125.1.1.1"),
+		endpoint.NewEndpoint("dualstack.example.com", endpoint.RecordTypeA, "125.1.1.2"),
+		endpoint.NewEndpoint("dualstack.example.com", endpoint.RecordTypeAAAA, "2001:db8::125"),
+		endpoint.NewEndpoint("ipv6only.example.com", endpoint.RecordTypeAAAA, "2001:db8::126"),
 	}
 	validateEndpoints(t, actual, expected)
 	client.verifyGetObjectRequest(t, "zone_auth", "", &map[string]string{
@@ -744,36 +1029,43 @@ func TestInfobloxRecords(t *testing.T) {
 		"_max_results":      "1000",
 		"_paging":           "1",
 		"_return_as_object": "1",
-		"view":              "",
 		"zone":              "example.com"}).
+		ExpectNotRequestURLQueryParam(t, "view").
+		ExpectRequestURLQueryParam(t, "zone", "example.com")
+	client.verifyGetObjectRequest(t, "record:aaaa", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"zone":              "example.com"}).
+		ExpectNotRequestURLQueryParam(t, "view").
 		ExpectRequestURLQueryParam(t, "zone", "example.com")
 	client.verifyGetObjectRequest(t, "record:host", "", &map[string]string{
 		"_max_results":      "1000",
 		"_paging":           "1",
 		"_return_as_object": "1",
-		"view":              "",
 		"zone":              "example.com"}).
+		ExpectNotRequestURLQueryParam(t, "view").
 		ExpectRequestURLQueryParam(t, "zone", "example.com")
 	client.verifyGetObjectRequest(t, "record:cname", "", &map[string]string{
 		"_max_results":      "1000",
 		"_paging":           "1",
 		"_return_as_object": "1",
-		"view":              "",
 		"zone":              "example.com"}).
+		ExpectNotRequestURLQueryParam(t, "view").
 		ExpectRequestURLQueryParam(t, "zone", "example.com")
 	client.verifyGetObjectRequest(t, "record:ns", "", &map[string]string{
 		"_max_results":      "1000",
 		"_paging":           "1",
 		"_return_as_object": "1",
-		"view":              "",
 		"zone":              "example.com"}).
+		ExpectNotRequestURLQueryParam(t, "view").
 		ExpectRequestURLQueryParam(t, "zone", "example.com")
 	client.verifyGetObjectRequest(t, "record:txt", "", &map[string]string{
 		"_max_results":      "1000",
 		"_paging":           "1",
 		"_return_as_object": "1",
-		"view":              "",
 		"zone":              "example.com"}).
+		ExpectNotRequestURLQueryParam(t, "view").
 		ExpectRequestURLQueryParam(t, "zone", "example.com")
 	client.verifyNoMoreGetObjectRequests(t)
 }
@@ -815,6 +1107,14 @@ func TestInfobloxRecordsWithView(t *testing.T) {
 		"view":              "Inside"}).
 		ExpectRequestURLQueryParam(t, "zone", "foo.example.com").
 		ExpectRequestURLQueryParam(t, "view", "Inside")
+	client.verifyGetObjectRequest(t, "record:aaaa", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"zone":              "foo.example.com",
+		"view":              "Inside"}).
+		ExpectRequestURLQueryParam(t, "zone", "foo.example.com").
+		ExpectRequestURLQueryParam(t, "view", "Inside")
 	client.verifyGetObjectRequest(t, "record:host", "", &map[string]string{
 		"_max_results":      "1000",
 		"_paging":           "1",
@@ -849,6 +1149,12 @@ func TestInfobloxRecordsWithView(t *testing.T) {
 		"_return_as_object": "1", "zone": "bar.example.com", "view": "Inside"}).
 		ExpectRequestURLQueryParam(t, "zone", "bar.example.com").
 		ExpectRequestURLQueryParam(t, "view", "Inside")
+	client.verifyGetObjectRequest(t, "record:aaaa", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1", "zone": "bar.example.com", "view": "Inside"}).
+		ExpectRequestURLQueryParam(t, "zone", "bar.example.com").
+		ExpectRequestURLQueryParam(t, "view", "Inside")
 	client.verifyGetObjectRequest(t, "record:host", "", &map[string]string{
 		"_max_results":      "1000",
 		"_paging":           "1",
@@ -874,6 +1180,90 @@ func TestInfobloxRecordsWithView(t *testing.T) {
 		"zone":              "bar.example.com", "view": "Inside"}).
 		ExpectRequestURLQueryParam(t, "zone", "bar.example.com").
 		ExpectRequestURLQueryParam(t, "view", "Inside")
+	client.verifyNoMoreGetObjectRequests(t)
+}
+
+func TestInfobloxRecordsWithNameRegexUsesGlobalQueries(t *testing.T) {
+	client := mockIBConnector{
+		mockInfobloxZones: &[]ibclient.ZoneAuth{
+			createMockInfobloxZone("foo.example.com"),
+			createMockInfobloxZone("bar.example.com"),
+		},
+		mockInfobloxObjects: &[]ibclient.IBObject{
+			createMockInfobloxObjectWithZone("cat.foo.example.com", endpoint.RecordTypeA, "123.123.123.122", "foo.example.com"),
+			createMockInfobloxObjectWithZone("dog.bar.example.com", endpoint.RecordTypeA, "123.123.123.123", "bar.example.com"),
+			createMockInfobloxObjectWithZone("ignored.other.example.com", endpoint.RecordTypeA, "123.123.123.124", "bar.example.com"),
+		},
+	}
+
+	providerCfg := newInfobloxProvider(endpoint.NewDomainFilter([]string{"foo.example.com", "bar.example.com"}), provider.NewZoneIDFilter([]string{""}), "Inside", true, false, &client)
+	providerCfg.config.NameRegEx = "^(cat\\.foo|dog\\.bar)\\.example\\.com$"
+	requestBuilder := NewExtendedRequestBuilder(0, "", providerCfg.config.NameRegEx)
+	requestBuilder.Init(
+		ibclient.HostConfig{Host: "localhost", Port: "8080", Version: "2.3.1"},
+		ibclient.AuthConfig{Username: "user", Password: "abcd"},
+	)
+	client.requestBuilder = *requestBuilder
+
+	actual, err := providerCfg.Records(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := []*endpoint.Endpoint{
+		endpoint.NewEndpoint("cat.foo.example.com", endpoint.RecordTypeA, "123.123.123.122"),
+		endpoint.NewEndpoint("dog.bar.example.com", endpoint.RecordTypeA, "123.123.123.123"),
+	}
+	validateEndpoints(t, actual, expected)
+
+	client.verifyGetObjectRequest(t, "record:a", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"view":              "Inside"}).
+		ExpectRequestURLQueryParam(t, "name~", "^(cat\\.foo|dog\\.bar)\\.example\\.com$").
+		ExpectRequestURLQueryParam(t, "view", "Inside").
+		ExpectNotRequestURLQueryParam(t, "zone")
+	client.verifyGetObjectRequest(t, "record:aaaa", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"view":              "Inside"}).
+		ExpectRequestURLQueryParam(t, "name~", "^(cat\\.foo|dog\\.bar)\\.example\\.com$").
+		ExpectRequestURLQueryParam(t, "view", "Inside").
+		ExpectNotRequestURLQueryParam(t, "zone")
+	client.verifyGetObjectRequest(t, "record:host", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"view":              "Inside"}).
+		ExpectRequestURLQueryParam(t, "name~", "^(cat\\.foo|dog\\.bar)\\.example\\.com$").
+		ExpectRequestURLQueryParam(t, "view", "Inside").
+		ExpectNotRequestURLQueryParam(t, "zone")
+	client.verifyGetObjectRequest(t, "record:cname", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"view":              "Inside"}).
+		ExpectRequestURLQueryParam(t, "name~", "^(cat\\.foo|dog\\.bar)\\.example\\.com$").
+		ExpectRequestURLQueryParam(t, "view", "Inside").
+		ExpectNotRequestURLQueryParam(t, "zone")
+	client.verifyGetObjectRequest(t, "record:txt", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"view":              "Inside"}).
+		ExpectRequestURLQueryParam(t, "name~", "^(cat\\.foo|dog\\.bar)\\.example\\.com$").
+		ExpectRequestURLQueryParam(t, "view", "Inside").
+		ExpectNotRequestURLQueryParam(t, "zone")
+	client.verifyGetObjectRequest(t, "record:ns", "", &map[string]string{
+		"_max_results":      "1000",
+		"_paging":           "1",
+		"_return_as_object": "1",
+		"view":              "Inside"}).
+		ExpectRequestURLQueryParam(t, "name~", "^(cat\\.foo|dog\\.bar)\\.example\\.com$").
+		ExpectRequestURLQueryParam(t, "view", "Inside").
+		ExpectNotRequestURLQueryParam(t, "zone")
 	client.verifyNoMoreGetObjectRequests(t)
 }
 
@@ -931,6 +1321,7 @@ func TestInfobloxRecordsReverse(t *testing.T) {
 		endpoint.NewEndpoint("example2.com", endpoint.RecordTypePTR, "10.0.0.2"),
 	}
 	validateEndpoints(t, actual, expected)
+	assert.Equal(t, 1, client.countGetObjectRequests("zone_auth"))
 }
 
 func TestInfobloxApplyChanges(t *testing.T) {
@@ -948,7 +1339,9 @@ func TestInfobloxApplyChanges(t *testing.T) {
 		endpoint.NewEndpoint("bar.example.com", endpoint.RecordTypeTXT, "tag"),
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeA, "5.6.7.8"),
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeTXT, "tag"),
+		endpoint.NewEndpoint("ipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1"),
 		endpoint.NewEndpoint("new.example.com", endpoint.RecordTypeA, "111.222.111.222"),
+		endpoint.NewEndpoint("newipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::22"),
 		endpoint.NewEndpoint("newcname.example.com", endpoint.RecordTypeCNAME, "other.com"),
 		endpoint.NewEndpoint("newzone.example.com", endpoint.RecordTypeNS, "newns-zone.example.com"),
 		endpoint.NewEndpoint("multiple.example.com", endpoint.RecordTypeA, "1.2.3.4,3.4.5.6,8.9.10.11"),
@@ -957,12 +1350,87 @@ func TestInfobloxApplyChanges(t *testing.T) {
 
 	validateEndpoints(t, client.deletedEndpoints, []*endpoint.Endpoint{
 		endpoint.NewEndpoint("old.example.com", endpoint.RecordTypeA, ""),
+		endpoint.NewEndpoint("oldipv6.example.com", endpoint.RecordTypeAAAA, ""),
 		endpoint.NewEndpoint("oldcname.example.com", endpoint.RecordTypeCNAME, ""),
 		endpoint.NewEndpoint("oldzone.example.com", endpoint.RecordTypeNS, ""),
 		endpoint.NewEndpoint("deleted.example.com", endpoint.RecordTypeA, ""),
+		endpoint.NewEndpoint("deletedipv6.example.com", endpoint.RecordTypeAAAA, ""),
 		endpoint.NewEndpoint("deletedcname.example.com", endpoint.RecordTypeCNAME, ""),
 		endpoint.NewEndpoint("deletedzone.example.com", endpoint.RecordTypeNS, ""),
 	})
+
+	validateEndpoints(t, client.updatedEndpoints, []*endpoint.Endpoint{})
+}
+
+func TestInfobloxRecordsReverseCreatedWhenMissing(t *testing.T) {
+	client := mockIBConnector{
+		mockInfobloxZones: &[]ibclient.ZoneAuth{
+			createMockInfobloxZone("example.com"),
+			createMockInfobloxZone("1.2.3.0/24"),
+		},
+		mockInfobloxObjects: &[]ibclient.IBObject{
+			createMockInfobloxObjectWithZone("ptrmissing.example.com", endpoint.RecordTypeA, "1.2.3.9", "example.com"),
+		},
+	}
+
+	providerCfg := newInfobloxProvider(endpoint.NewDomainFilter([]string{"example.com", "1.2.3.0/24"}), provider.NewZoneIDFilter([]string{""}), "", false, true, &client)
+
+	changes := &plan.Changes{
+		Create: []*endpoint.Endpoint{},
+		UpdateOld: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypeA, "1.2.3.9"),
+		},
+		UpdateNew: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypeA, "1.2.3.9"),
+		},
+		Delete: []*endpoint.Endpoint{},
+	}
+
+	if err := providerCfg.ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatal(err)
+	}
+
+	validateEndpoints(t, client.createdEndpoints, []*endpoint.Endpoint{
+		endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypePTR, "1.2.3.9"),
+	})
+
+	validateEndpoints(t, client.deletedEndpoints, []*endpoint.Endpoint{})
+
+	validateEndpoints(t, client.updatedEndpoints, []*endpoint.Endpoint{
+		endpoint.NewEndpoint("ptrmissing.example.com", endpoint.RecordTypeA, "1.2.3.9"),
+	})
+}
+func TestInfobloxApplyChangesReverseWithExistingRecords(t *testing.T) {
+	client := mockIBConnector{
+		mockInfobloxZones: &[]ibclient.ZoneAuth{
+			createMockInfobloxZone("example.com"),
+			createMockInfobloxZone("1.2.3.0/24"),
+		},
+		mockInfobloxObjects: &[]ibclient.IBObject{
+			createMockInfobloxObjectWithZone("ptrexists.example.com", endpoint.RecordTypePTR, "1.2.3.9", "1.2.3.0/24"),
+		},
+	}
+
+	providerCfg := newInfobloxProvider(endpoint.NewDomainFilter([]string{"example.com", "1.2.3.0/24"}), provider.NewZoneIDFilter([]string{""}), "", false, true, &client)
+
+	changes := &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("ptrexists.example.com", endpoint.RecordTypeA, "1.2.3.9"),
+		},
+		UpdateOld: []*endpoint.Endpoint{},
+		UpdateNew: []*endpoint.Endpoint{},
+		Delete:    []*endpoint.Endpoint{},
+	}
+
+	if err := providerCfg.ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatal(err)
+	}
+
+	validateEndpoints(t, client.createdEndpoints, []*endpoint.Endpoint{
+		endpoint.NewEndpoint("ptrexists.example.com", endpoint.RecordTypeA, "1.2.3.9"),
+	})
+
+	validateEndpoints(t, client.deletedEndpoints, []*endpoint.Endpoint{})
 
 	validateEndpoints(t, client.updatedEndpoints, []*endpoint.Endpoint{})
 }
@@ -984,7 +1452,9 @@ func TestInfobloxApplyChangesReverse(t *testing.T) {
 		endpoint.NewEndpoint("bar.example.com", endpoint.RecordTypeTXT, "tag"),
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeA, "5.6.7.8"),
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeTXT, "tag"),
+		endpoint.NewEndpoint("ipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1"),
 		endpoint.NewEndpoint("new.example.com", endpoint.RecordTypeA, "111.222.111.222"),
+		endpoint.NewEndpoint("newipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::22"),
 		endpoint.NewEndpoint("newcname.example.com", endpoint.RecordTypeCNAME, "other.com"),
 		endpoint.NewEndpoint("newzone.example.com", endpoint.RecordTypeNS, "newns-zone.example.com"),
 		endpoint.NewEndpoint("multiple.example.com", endpoint.RecordTypeA, "1.2.3.4,3.4.5.6,8.9.10.11"),
@@ -993,10 +1463,12 @@ func TestInfobloxApplyChangesReverse(t *testing.T) {
 
 	validateEndpoints(t, client.deletedEndpoints, []*endpoint.Endpoint{
 		endpoint.NewEndpoint("old.example.com", endpoint.RecordTypeA, ""),
+		endpoint.NewEndpoint("oldipv6.example.com", endpoint.RecordTypeAAAA, ""),
 		endpoint.NewEndpoint("oldcname.example.com", endpoint.RecordTypeCNAME, ""),
 		endpoint.NewEndpoint("oldzone.example.com", endpoint.RecordTypeNS, ""),
 		endpoint.NewEndpoint("deleted.example.com", endpoint.RecordTypeA, ""),
 		endpoint.NewEndpoint("deleted.example.com", endpoint.RecordTypePTR, ""),
+		endpoint.NewEndpoint("deletedipv6.example.com", endpoint.RecordTypeAAAA, ""),
 		endpoint.NewEndpoint("deletedcname.example.com", endpoint.RecordTypeCNAME, ""),
 		endpoint.NewEndpoint("deletedzone.example.com", endpoint.RecordTypeNS, ""),
 	})
@@ -1030,7 +1502,9 @@ func testInfobloxApplyChangesInternal(t *testing.T, dryRun, createPTR bool, clie
 		createMockInfobloxObjectWithZone("deleted.example.com", endpoint.RecordTypePTR, "121.212.121.212", "example.com"),
 		createMockInfobloxObjectWithZone("deletedcname.example.com", endpoint.RecordTypeCNAME, "other.com", "example.com"),
 		createMockInfobloxObjectWithZone("deletedzone.example.com", endpoint.RecordTypeNS, "deletedns-zone.example.com", "example.com"),
+		createMockInfobloxObjectWithZone("deletedipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::12", "example.com"),
 		createMockInfobloxObjectWithZone("old.example.com", endpoint.RecordTypeA, "121.212.121.212", "example.com"),
+		createMockInfobloxObjectWithZone("oldipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::21", "example.com"),
 		createMockInfobloxObjectWithZone("oldcname.example.com", endpoint.RecordTypeCNAME, "other.com", "example.com"),
 		createMockInfobloxObjectWithZone("oldzone.example.com", endpoint.RecordTypeNS, "oldns-zone.example.com", "example.com"),
 	}
@@ -1054,31 +1528,39 @@ func testInfobloxApplyChangesInternal(t *testing.T, dryRun, createPTR bool, clie
 		endpoint.NewEndpoint("bar.example.com", endpoint.RecordTypeTXT, "tag"),
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeA, "5.6.7.8"),
 		endpoint.NewEndpoint("other.com", endpoint.RecordTypeTXT, "tag"),
+		endpoint.NewEndpoint("ipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::1"),
 		endpoint.NewEndpoint("nope.com", endpoint.RecordTypeA, "4.4.4.4"),
 		endpoint.NewEndpoint("nope.com", endpoint.RecordTypeTXT, "tag"),
+		endpoint.NewEndpoint("ipv6.nope.com", endpoint.RecordTypeAAAA, "2001:db8::2"),
 		endpoint.NewEndpoint("multiple.example.com", endpoint.RecordTypeA, "1.2.3.4,3.4.5.6,8.9.10.11"),
 		endpoint.NewEndpoint("multiple.example.com", endpoint.RecordTypeTXT, "tag-multiple-A-records"),
 	}
 
 	updateOldRecords := []*endpoint.Endpoint{
 		endpoint.NewEndpoint("old.example.com", endpoint.RecordTypeA, "121.212.121.212"),
+		endpoint.NewEndpoint("oldipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::21"),
 		endpoint.NewEndpoint("oldcname.example.com", endpoint.RecordTypeCNAME, "other.com"),
 		endpoint.NewEndpoint("oldzone.example.com", endpoint.RecordTypeNS, "oldns-zone.example.com"),
 		endpoint.NewEndpoint("old.nope.com", endpoint.RecordTypeA, "121.212.121.212"),
+		endpoint.NewEndpoint("oldipv6.nope.com", endpoint.RecordTypeAAAA, "2001:db8::21"),
 	}
 
 	updateNewRecords := []*endpoint.Endpoint{
 		endpoint.NewEndpoint("new.example.com", endpoint.RecordTypeA, "111.222.111.222"),
+		endpoint.NewEndpoint("newipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::22"),
 		endpoint.NewEndpoint("newcname.example.com", endpoint.RecordTypeCNAME, "other.com"),
 		endpoint.NewEndpoint("newzone.example.com", endpoint.RecordTypeNS, "newns-zone.example.com"),
 		endpoint.NewEndpoint("new.nope.com", endpoint.RecordTypeA, "222.111.222.111"),
+		endpoint.NewEndpoint("newipv6.nope.com", endpoint.RecordTypeAAAA, "2001:db8::22"),
 	}
 
 	deleteRecords := []*endpoint.Endpoint{
 		endpoint.NewEndpoint("deleted.example.com", endpoint.RecordTypeA, "121.212.121.212"),
+		endpoint.NewEndpoint("deletedipv6.example.com", endpoint.RecordTypeAAAA, "2001:db8::12"),
 		endpoint.NewEndpoint("deletedcname.example.com", endpoint.RecordTypeCNAME, "other.com"),
 		endpoint.NewEndpoint("deletedzone.example.com", endpoint.RecordTypeNS, "deletedns-zone.example.com"),
 		endpoint.NewEndpoint("deleted.nope.com", endpoint.RecordTypeA, "222.111.222.111"),
+		endpoint.NewEndpoint("deletedipv6.nope.com", endpoint.RecordTypeAAAA, "2001:db8::12"),
 	}
 
 	if createPTR {
@@ -1095,6 +1577,52 @@ func testInfobloxApplyChangesInternal(t *testing.T, dryRun, createPTR bool, clie
 	if err := providerCfg.ApplyChanges(context.Background(), changes); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestInfobloxApplyChangesUpdateCNAME asserts that retargeting an existing CNAME
+// is applied as a WAPI update of the existing record. Splitting it into a create
+// plus a delete makes the create fail with an IBDataConflictError, because a name
+// can hold only one CNAME and creates are submitted before deletes.
+// See https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/63
+func TestInfobloxApplyChangesUpdateCNAME(t *testing.T) {
+	existing := createMockInfobloxObjectWithZone("alloy.example.com", endpoint.RecordTypeCNAME, "traefik.example.com", "example.com")
+	client := mockIBConnector{
+		mockInfobloxZones: &[]ibclient.ZoneAuth{
+			createMockInfobloxZone("example.com"),
+		},
+		mockInfobloxObjects: &[]ibclient.IBObject{existing},
+	}
+
+	providerCfg := newInfobloxProvider(
+		endpoint.NewDomainFilter([]string{"example.com"}),
+		provider.NewZoneIDFilter([]string{""}),
+		"",
+		false,
+		false,
+		&client,
+	)
+
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("alloy.example.com", endpoint.RecordTypeCNAME, "traefik.example.com"),
+		},
+		UpdateNew: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("alloy.example.com", endpoint.RecordTypeCNAME, "nginx.example.com"),
+		},
+	}
+
+	if err := providerCfg.ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatal(err)
+	}
+
+	validateEndpoints(t, client.updatedEndpoints, []*endpoint.Endpoint{
+		endpoint.NewEndpoint("alloy.example.com", endpoint.RecordTypeCNAME, "nginx.example.com"),
+	})
+	validateEndpoints(t, client.createdEndpoints, []*endpoint.Endpoint{})
+	validateEndpoints(t, client.deletedEndpoints, []*endpoint.Endpoint{})
+
+	// The update has to be sent against the reference of the pre-existing record.
+	assert.Equal(t, []string{existing.(*ibclient.RecordCNAME).Ref}, client.updatedRefs)
 }
 
 func TestInfobloxZones(t *testing.T) {
@@ -1222,6 +1750,171 @@ func TestExtendedRequestMaxResultsBuilder(t *testing.T) {
 	assert.True(t, req.URL.Query().Get("_max_results") == "")
 }
 
+func TestNormalizeBasePath(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		in       string
+		expected string
+	}{
+		{"empty", "", ""},
+		{"whitespace only", "   ", ""},
+		{"single slash", "/", ""},
+		{"only slashes", "///", ""},
+		{"plain", "nios", "nios"},
+		{"leading slash", "/nios", "nios"},
+		{"trailing slash", "nios/", "nios"},
+		{"both slashes", "/nios/", "nios"},
+		{"nested", "/proxy/nios/", "proxy/nios"},
+		{"duplicate slashes", "//proxy//nios//", "proxy/nios"},
+		{"surrounding whitespace", "  /nios/  ", "nios"},
+		{"whitespace inside segments", "/ proxy / nios /", "proxy/nios"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, normalizeBasePath(tc.in))
+		})
+	}
+}
+
+// TestExtendedRequestBuilderDefaultBasePath pins the default (unconfigured) request
+// path so a regression that unconditionally prefixes requests is caught.
+func TestExtendedRequestBuilderDefaultBasePath(t *testing.T) {
+	hostCfg := ibclient.HostConfig{
+		Host:    "localhost",
+		Port:    "8080",
+		Version: "2.3.1",
+	}
+	authCfg := ibclient.AuthConfig{Username: "user", Password: "abcd"}
+	obj := ibclient.NewEmptyRecordCNAME()
+
+	// the builder without base path support and the one constructed with an
+	// empty/blank base path must produce byte-identical URLs
+	legacy := NewExtendedRequestBuilder(0, "", "")
+	legacy.Init(hostCfg, authCfg)
+	legacyReq, err := legacy.BuildRequest(ibclient.GET, obj, "", &ibclient.QueryParams{})
+	assert.NoError(t, err)
+	assert.Equal(t, "/wapi/v2.3.1/record:cname", legacyReq.URL.Path)
+	assert.Equal(t, "", legacyReq.URL.RawPath)
+
+	for _, basePath := range []string{"", "/", "   ", "//"} {
+		rb := NewExtendedRequestBuilderWithBasePath(0, "", "", basePath)
+		rb.Init(hostCfg, authCfg)
+		req, err := rb.BuildRequest(ibclient.GET, obj, "", &ibclient.QueryParams{})
+		assert.NoError(t, err)
+		assert.Equal(t, legacyReq.URL.String(), req.URL.String(), "base path %q must not change the URL", basePath)
+		assert.Equal(t, "", req.URL.RawPath)
+	}
+}
+
+func TestExtendedRequestBuilderBasePath(t *testing.T) {
+	hostCfg := ibclient.HostConfig{
+		Host:    "localhost",
+		Port:    "8080",
+		Version: "2.3.1",
+	}
+	authCfg := ibclient.AuthConfig{Username: "user", Password: "abcd"}
+
+	for _, tc := range []struct {
+		name         string
+		basePath     string
+		expectedPath string
+	}{
+		{"simple", "nios", "/nios/wapi/v2.3.1/record:cname"},
+		{"leading and trailing slash", "/nios/", "/nios/wapi/v2.3.1/record:cname"},
+		{"nested", "proxy/nios", "/proxy/nios/wapi/v2.3.1/record:cname"},
+		{"duplicate slashes", "//proxy//nios//", "/proxy/nios/wapi/v2.3.1/record:cname"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rb := NewExtendedRequestBuilderWithBasePath(0, "", "", tc.basePath)
+			rb.Init(hostCfg, authCfg)
+
+			obj := ibclient.NewEmptyRecordCNAME()
+			req, err := rb.BuildRequest(ibclient.GET, obj, "", &ibclient.QueryParams{})
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expectedPath, req.URL.Path)
+			assert.Equal(t, "localhost:8080", req.URL.Host)
+		})
+	}
+}
+
+// TestExtendedRequestBuilderBasePathPreservesQueryAndMethods makes sure prefixing the
+// path does not interfere with the existing _max_results / name~ behaviour.
+func TestExtendedRequestBuilderBasePathPreservesQueryAndMethods(t *testing.T) {
+	hostCfg := ibclient.HostConfig{
+		Host:    "localhost",
+		Port:    "8080",
+		Version: "2.3.1",
+	}
+	authCfg := ibclient.AuthConfig{Username: "user", Password: "abcd"}
+
+	rb := NewExtendedRequestBuilderWithBasePath(54321, "", "^staging.*test.com$", "/nios/")
+	rb.Init(hostCfg, authCfg)
+
+	obj := ibclient.NewEmptyRecordCNAME()
+
+	req, err := rb.BuildRequest(ibclient.GET, obj, "", &ibclient.QueryParams{})
+	assert.NoError(t, err)
+	assert.Equal(t, "/nios/wapi/v2.3.1/record:cname", req.URL.Path)
+	assert.Equal(t, "54321", req.URL.Query().Get("_max_results"))
+	assert.Equal(t, "^staging.*test.com$", req.URL.Query().Get("name~"))
+
+	// non GET requests get the prefix too, but no query parameters
+	req, err = rb.BuildRequest(ibclient.CREATE, obj, "", &ibclient.QueryParams{})
+	assert.NoError(t, err)
+	assert.Equal(t, "/nios/wapi/v2.3.1/record:cname", req.URL.Path)
+	assert.Equal(t, "", req.URL.Query().Get("_max_results"))
+	assert.Equal(t, "", req.URL.Query().Get("name~"))
+
+	// a reference based request (contains characters that need escaping) stays intact
+	ref := "record:cname/ZG5zLmJpbmRfY25hbWUk:foo/bar"
+	req, err = rb.BuildRequest(ibclient.DELETE, obj, ref, &ibclient.QueryParams{})
+	assert.NoError(t, err)
+	assert.Equal(t, "/nios/wapi/v2.3.1/"+ref, req.URL.Path)
+	assert.True(t, strings.HasPrefix(req.URL.EscapedPath(), "/nios/wapi/v2.3.1/"))
+}
+
+// TestNewRequestBuilderBasePathSelectsExtendedBuilder verifies that setting only the
+// base path is enough to activate the extended request builder and that the normalized
+// prefix reaches it, while a blank base path keeps the upstream default builder.
+func TestNewRequestBuilderBasePathSelectsExtendedBuilder(t *testing.T) {
+	base := StartupConfig{
+		Host:     "localhost",
+		Port:     443,
+		Username: "user",
+		Password: "abcd",
+		Version:  "2.3.1",
+		View:     "default",
+	}
+	hostCfg := ibclient.HostConfig{Host: base.Host, Port: "443", Version: base.Version}
+	authCfg := ibclient.AuthConfig{Username: base.Username, Password: base.Password}
+
+	for _, tc := range []struct {
+		name            string
+		basePath        string
+		wantExtended    bool
+		wantBuilderPath string
+	}{
+		{name: "base path only", basePath: "/nios/", wantExtended: true, wantBuilderPath: "nios"},
+		{name: "nested base path", basePath: "proxy//nios", wantExtended: true, wantBuilderPath: "proxy/nios"},
+		{name: "blank base path", basePath: "  //  ", wantExtended: false},
+		{name: "unset base path", basePath: "", wantExtended: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			cfg.BasePath = tc.basePath
+			rb, err := newRequestBuilder(&cfg, hostCfg, authCfg)
+			assert.NoError(t, err)
+
+			extended, ok := rb.(*ExtendedRequestBuilder)
+			if !tc.wantExtended {
+				assert.False(t, ok, "expected the upstream default builder, got %T", rb)
+				return
+			}
+			assert.True(t, ok, "expected *ExtendedRequestBuilder, got %T", rb)
+			assert.Equal(t, tc.wantBuilderPath, extended.basePath)
+		})
+	}
+}
+
 //func TestGetObject(t *testing.T) {
 //	hostCfg := ibclient.HostConfig{}
 //	authCfg := ibclient.AuthConfig{}
@@ -1260,4 +1953,58 @@ func (r *mockRequestor) SendRequest(req *http.Request) (res []byte, err error) {
 
 func validateEndpoints(t *testing.T, endpoints []*endpoint.Endpoint, expected []*endpoint.Endpoint) {
 	assert.True(t, SameEndpoints(endpoints, expected), "actual and expected endpoints don't match. %s:%s", endpoints, expected)
+}
+
+func TestFindReverseZonePicksMostSpecific(t *testing.T) {
+	provider := &Provider{}
+	broad := &ibclient.ZoneAuth{Fqdn: "10.0.0.0/8"}
+	narrow := &ibclient.ZoneAuth{Fqdn: "10.1.2.0/24"}
+
+	// The order must not matter, so try both.
+	assert.Equal(t, narrow, provider.findReverseZone([]*ibclient.ZoneAuth{broad, narrow}, "10.1.2.3"))
+	assert.Equal(t, narrow, provider.findReverseZone([]*ibclient.ZoneAuth{narrow, broad}, "10.1.2.3"))
+
+	// An address outside the narrow zone falls back to the broad one.
+	assert.Equal(t, broad, provider.findReverseZone([]*ibclient.ZoneAuth{broad, narrow}, "10.9.9.9"))
+}
+
+func TestFindReverseZonePicksMostSpecificIPv6(t *testing.T) {
+	provider := &Provider{}
+	broad := &ibclient.ZoneAuth{Fqdn: "2001:db8::/32"}
+	narrow := &ibclient.ZoneAuth{Fqdn: "2001:db8:1::/48"}
+
+	assert.Equal(t, narrow, provider.findReverseZone([]*ibclient.ZoneAuth{broad, narrow}, "2001:db8:1::1"))
+	assert.Equal(t, narrow, provider.findReverseZone([]*ibclient.ZoneAuth{narrow, broad}, "2001:db8:1::1"))
+	assert.Equal(t, broad, provider.findReverseZone([]*ibclient.ZoneAuth{broad, narrow}, "2001:db8:2::1"))
+}
+
+func TestToAAAAResponseMapDeduplicatesEquivalentNotations(t *testing.T) {
+	name := "host.example.com"
+	expanded := "2001:0db8:0000:0000:0000:0000:0000:0001"
+	compressed := "2001:db8::1"
+	ttl := uint32(300)
+
+	res := []ibclient.RecordAAAA{
+		{Name: &name, Ipv6Addr: &compressed, Ttl: &ttl},
+		{Name: &name, Ipv6Addr: &expanded, Ttl: &ttl},
+	}
+
+	rm := ToAAAAResponseMap(res)
+	assert.Len(t, rm.Map[name], 1, "the same address in two notations must yield one target")
+	assert.Equal(t, compressed, rm.Map[name][0].Target, "the first notation seen is kept")
+}
+
+func TestToAAAAResponseMapKeepsDistinctAddresses(t *testing.T) {
+	name := "host.example.com"
+	first := "2001:db8::1"
+	second := "2001:db8::2"
+	ttl := uint32(300)
+
+	res := []ibclient.RecordAAAA{
+		{Name: &name, Ipv6Addr: &first, Ttl: &ttl},
+		{Name: &name, Ipv6Addr: &second, Ttl: &ttl},
+	}
+
+	rm := ToAAAAResponseMap(res)
+	assert.Len(t, rm.Map[name], 2, "distinct addresses must both be kept")
 }

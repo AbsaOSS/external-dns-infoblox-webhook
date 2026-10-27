@@ -91,26 +91,30 @@ func (wh *WebhookServer) Start(config configuration.Config, p provider.Provider)
 // grid. serve is split out from Start so tests can drive it with a context
 // rather than real OS signals.
 func (wh *WebhookServer) serve(ctx context.Context, stop func(), l net.Listener, config configuration.Config, p provider.Provider) {
-	// These routes mirror api.StartHTTPApi (sigs.k8s.io/external-dns v0.14.2).
+	// These routes mirror api.StartHTTPApi (sigs.k8s.io/external-dns v0.24.0).
 	// We register them by hand rather than calling StartHTTPApi because that
 	// helper owns the net listener and the s.Serve call, leaving no seam for a
 	// graceful shutdown. Re-check this list against upstream whenever the
 	// external-dns dependency is bumped: a new or renamed webhook route will not
 	// surface as a compile error here, it will just 404 at runtime.
-	whAPI := &api.WebhookServer{Provider: p}
+	whAPI := &api.WebhookServer{Provider: p, MaxBodySize: config.ServerMaxBodySize}
 	m := http.NewServeMux()
 	m.HandleFunc("/", whAPI.NegotiateHandler)
 	m.HandleFunc("/records", whAPI.RecordsHandler)
 	m.HandleFunc("/adjustendpoints", whAPI.AdjustEndpointsHandler)
 
-	// SERVER_READ_TIMEOUT/SERVER_WRITE_TIMEOUT are intentionally left unwired
-	// (as on main): a WriteTimeout shorter than a slow /records apply would drop
-	// the connection before the apply can respond, so external-dns would retry an
-	// apply that already ran, the mid-apply cutoff the graceful drain exists to
-	// prevent. Wire them only as a deliberate, documented change if a use case
-	// arises.
+	// The timeouts and body-size cap mirror what main passes to
+	// api.StartHTTPApi. SERVER_READ_TIMEOUT/SERVER_WRITE_TIMEOUT default to 0
+	// (disabled): operators should only set a WriteTimeout longer than their
+	// slowest /records apply, otherwise the connection is dropped before the apply
+	// can respond and external-dns retries an apply that already ran, the
+	// mid-apply cutoff the graceful drain exists to prevent.
 	s := &http.Server{
-		Handler: m,
+		Handler:           m,
+		ReadTimeout:       config.ServerReadTimeout,
+		WriteTimeout:      config.ServerWriteTimeout,
+		ReadHeaderTimeout: config.ServerReadHeaderTimeout,
+		IdleTimeout:       config.ServerIdleTimeout,
 	}
 
 	// signal readiness (consumed by the health handler) once we are listening.
