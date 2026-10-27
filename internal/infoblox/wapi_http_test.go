@@ -42,6 +42,11 @@ const (
 	wapiTestZone     = "example.com"
 	wapiTestRevZone  = "10.0.0.0/24"
 	wapiTestArpaName = "7.0.0.10.in-addr.arpa"
+	wapiTestView     = "default"
+
+	wapiZoneAuth      = "zone_auth"
+	wapiFieldIPv4Addr = "ipv4addr"
+	wapiFieldPtrdName = "ptrdname"
 )
 
 // wapiFake is an in-process NIOS WAPI endpoint. Tests built on it drive the real
@@ -92,9 +97,9 @@ func (f *wapiFake) addZone(fqdn string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.zones = append(f.zones, map[string]any{
-		"_ref": fmt.Sprintf("zone_auth/%s:%s/default", strings.ReplaceAll(fqdn, "/", "-"), fqdn),
-		"fqdn": fqdn,
-		"view": "default",
+		"_ref":          fmt.Sprintf("zone_auth/%s:%s/default", strings.ReplaceAll(fqdn, "/", "-"), fqdn),
+		"fqdn":          fqdn,
+		defaultViewName: wapiTestView,
 	})
 }
 
@@ -112,7 +117,7 @@ func (f *wapiFake) storeLocked(objectType string, fields map[string]any) string 
 		stored[k] = v
 	}
 	// Refs are object-type prefixed, as NIOS emits them.
-	ref := fmt.Sprintf("%s/fake-%d:%v/default", objectType, f.nextID, fields["name"])
+	ref := fmt.Sprintf("%s/fake-%d:%v/default", objectType, f.nextID, fields[defaultNameName])
 	stored["_ref"] = ref
 	f.records[ref] = stored
 	return ref
@@ -212,7 +217,7 @@ func (f *wapiFake) parsePath(path string) (objectType, ref string, ok bool) {
 
 func (f *wapiFake) serveGet(w http.ResponseWriter, req *http.Request, objectType string) {
 	var result []map[string]any
-	if objectType == "zone_auth" {
+	if objectType == wapiZoneAuth {
 		f.mu.Lock()
 		result = append(result, f.zones...)
 		f.mu.Unlock()
@@ -236,9 +241,9 @@ func (f *wapiFake) serveGet(w http.ResponseWriter, req *http.Request, objectType
 // still filters on it here, which is what makes a wrong parameter name visible:
 // the search simply matches nothing.
 var wapiSearchFields = []string{
-	"name", "view", "zone",
-	"ipv4addr", "ipv6addr",
-	"ptrdname", "canonical", "text", "nameserver",
+	defaultNameName, defaultViewName, defaultZoneName,
+	wapiFieldIPv4Addr, "ipv6addr",
+	wapiFieldPtrdName, "canonical", "text", "nameserver",
 }
 
 func (f *wapiFake) find(objectType string, query url.Values) []map[string]any {
@@ -344,7 +349,7 @@ func startWAPIFake(t *testing.T, domainFilter *endpoint.DomainFilter) (*Provider
 		Password:     "wapi-password",
 		Version:      wapiTestVersion,
 		SSLVerify:    false,
-		View:         "default",
+		View:         wapiTestView,
 		MaxResults:   1000,
 		CreatePTR:    true,
 		DefaultTTL:   300,
@@ -380,24 +385,24 @@ func TestWAPICreateAddressFamilyFields(t *testing.T) {
 	}
 
 	aCreate := fake.firstRequest(t, http.MethodPost, recordA)
-	if got, _ := aCreate.Body["ipv4addr"].(string); got != wapiTestIPv4 {
+	if got, _ := aCreate.Body[wapiFieldIPv4Addr].(string); got != wapiTestIPv4 {
 		t.Errorf("record:a body ipv4addr = %q, want %q", got, wapiTestIPv4)
 	}
 	if _, present := aCreate.Body["ipv6addr"]; present {
 		t.Error("record:a body carries ipv6addr; an IPv4 address must not be written to the IPv6 field")
 	}
-	if got, _ := aCreate.Body["name"].(string); got != wapiTestFQDN {
+	if got, _ := aCreate.Body[defaultNameName].(string); got != wapiTestFQDN {
 		t.Errorf("record:a body name = %q, want %q", got, wapiTestFQDN)
 	}
 
 	ptrCreate := fake.firstRequest(t, http.MethodPost, recordPtr)
-	if got, _ := ptrCreate.Body["ipv4addr"].(string); got != wapiTestIPv4 {
+	if got, _ := ptrCreate.Body[wapiFieldIPv4Addr].(string); got != wapiTestIPv4 {
 		t.Errorf("record:ptr body ipv4addr = %q, want %q", got, wapiTestIPv4)
 	}
 	if _, present := ptrCreate.Body["ipv6addr"]; present {
 		t.Error("record:ptr body carries ipv6addr; an IPv4 PTR target must not be written to the IPv6 field")
 	}
-	if got, _ := ptrCreate.Body["ptrdname"].(string); got != wapiTestFQDN {
+	if got, _ := ptrCreate.Body[wapiFieldPtrdName].(string); got != wapiTestFQDN {
 		t.Errorf("record:ptr body ptrdname = %q, want %q", got, wapiTestFQDN)
 	}
 }
@@ -414,15 +419,15 @@ func TestWAPIDeleteLookupQueryParams(t *testing.T) {
 	fake.addZone(wapiTestRevZone)
 
 	aRef := fake.addRecord(recordA, map[string]any{
-		"name":     wapiTestFQDN,
-		"ipv4addr": wapiTestIPv4,
-		"view":     "default",
+		defaultNameName:   wapiTestFQDN,
+		wapiFieldIPv4Addr: wapiTestIPv4,
+		defaultViewName:   wapiTestView,
 	})
 	ptrRef := fake.addRecord(recordPtr, map[string]any{
-		"name":     wapiTestArpaName,
-		"ptrdname": wapiTestFQDN,
-		"ipv4addr": wapiTestIPv4,
-		"view":     "default",
+		defaultNameName:   wapiTestArpaName,
+		wapiFieldPtrdName: wapiTestFQDN,
+		wapiFieldIPv4Addr: wapiTestIPv4,
+		defaultViewName:   wapiTestView,
 	})
 
 	err := providerCfg.ApplyChanges(context.Background(), &plan.Changes{
@@ -435,18 +440,18 @@ func TestWAPIDeleteLookupQueryParams(t *testing.T) {
 	}
 
 	aLookup := fake.firstRequest(t, http.MethodGet, recordA)
-	if got := aLookup.Query.Get("ipv4addr"); got != wapiTestIPv4 {
+	if got := aLookup.Query.Get(wapiFieldIPv4Addr); got != wapiTestIPv4 {
 		t.Errorf("record:a lookup ipv4addr = %q, want %q (query was %q)", got, wapiTestIPv4, aLookup.Query.Encode())
 	}
-	if got := aLookup.Query.Get("name"); got != wapiTestFQDN {
+	if got := aLookup.Query.Get(defaultNameName); got != wapiTestFQDN {
 		t.Errorf("record:a lookup name = %q, want %q", got, wapiTestFQDN)
 	}
 
 	ptrLookup := fake.firstRequest(t, http.MethodGet, recordPtr)
-	if got := ptrLookup.Query.Get("ipv4addr"); got != wapiTestIPv4 {
+	if got := ptrLookup.Query.Get(wapiFieldIPv4Addr); got != wapiTestIPv4 {
 		t.Errorf("record:ptr lookup ipv4addr = %q, want %q (query was %q)", got, wapiTestIPv4, ptrLookup.Query.Encode())
 	}
-	if got := ptrLookup.Query.Get("ptrdname"); got != wapiTestFQDN {
+	if got := ptrLookup.Query.Get(wapiFieldPtrdName); got != wapiTestFQDN {
 		t.Errorf("record:ptr lookup ptrdname = %q, want %q", got, wapiTestFQDN)
 	}
 
@@ -471,17 +476,17 @@ func TestWAPIReadResponseEnvelope(t *testing.T) {
 	fake.addZone(wapiTestRevZone)
 
 	fake.addRecord(recordA, map[string]any{
-		"name":     wapiTestFQDN,
-		"ipv4addr": wapiTestIPv4,
-		"view":     "default",
-		"zone":     wapiTestZone,
+		defaultNameName:   wapiTestFQDN,
+		wapiFieldIPv4Addr: wapiTestIPv4,
+		defaultViewName:   wapiTestView,
+		defaultZoneName:   wapiTestZone,
 	})
 	fake.addRecord(recordPtr, map[string]any{
-		"name":     wapiTestArpaName,
-		"ptrdname": wapiTestFQDN,
-		"ipv4addr": wapiTestIPv4,
-		"view":     "default",
-		"zone":     "0.0.10.in-addr.arpa",
+		defaultNameName:   wapiTestArpaName,
+		wapiFieldPtrdName: wapiTestFQDN,
+		wapiFieldIPv4Addr: wapiTestIPv4,
+		defaultViewName:   wapiTestView,
+		defaultZoneName:   "0.0.10.in-addr.arpa",
 	})
 
 	endpoints, err := providerCfg.Records(context.Background())
@@ -519,7 +524,7 @@ func TestWAPIReadResponseEnvelope(t *testing.T) {
 	var sawArpaRead bool
 	for _, req := range fake.observed() {
 		if req.Method == http.MethodGet && req.ObjectType == recordPtr &&
-			strings.HasSuffix(req.Query.Get("zone"), ".in-addr.arpa") {
+			strings.HasSuffix(req.Query.Get(defaultZoneName), ".in-addr.arpa") {
 			sawArpaRead = true
 		}
 	}
@@ -549,13 +554,14 @@ func TestWAPIRequestShape(t *testing.T) {
 	}
 
 	allowedObjects := map[string]bool{
-		"zone_auth": true,
-		recordA:     true,
-		recordPtr:   true,
-		recordCname: true,
-		recordNs:    true,
-		recordTxt:   true,
-		recordHost:  true,
+		wapiZoneAuth: true,
+		recordA:      true,
+		recordAaaa:   true,
+		recordPtr:    true,
+		recordCname:  true,
+		recordNs:     true,
+		recordTxt:    true,
+		recordHost:   true,
 	}
 	allowedMethods := map[string]bool{
 		http.MethodGet: true, http.MethodPost: true,

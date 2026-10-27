@@ -85,7 +85,7 @@ func newStubGrid(t *testing.T, status int, body string) (*Provider, *int64) {
 	return &Provider{
 		client:       client,
 		domainFilter: endpoint.NewDomainFilter([]string{testZone}),
-		config:       &StartupConfig{View: "default", Username: testWAPIUser, Password: testWAPIPassword},
+		config:       &StartupConfig{View: wapiTestView, Username: testWAPIUser, Password: testWAPIPassword},
 	}, &requests
 }
 
