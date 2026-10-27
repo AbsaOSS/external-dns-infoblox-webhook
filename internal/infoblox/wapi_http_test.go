@@ -46,6 +46,7 @@ const (
 
 	wapiZoneAuth      = "zone_auth"
 	wapiFieldIPv4Addr = "ipv4addr"
+	wapiFieldIPv6Addr = "ipv6addr"
 	wapiFieldPtrdName = "ptrdname"
 )
 
@@ -242,7 +243,7 @@ func (f *wapiFake) serveGet(w http.ResponseWriter, req *http.Request, objectType
 // the search simply matches nothing.
 var wapiSearchFields = []string{
 	defaultNameName, defaultViewName, defaultZoneName,
-	wapiFieldIPv4Addr, "ipv6addr",
+	wapiFieldIPv4Addr, wapiFieldIPv6Addr,
 	wapiFieldPtrdName, "canonical", "text", "nameserver",
 }
 
@@ -388,7 +389,7 @@ func TestWAPICreateAddressFamilyFields(t *testing.T) {
 	if got, _ := aCreate.Body[wapiFieldIPv4Addr].(string); got != wapiTestIPv4 {
 		t.Errorf("record:a body ipv4addr = %q, want %q", got, wapiTestIPv4)
 	}
-	if _, present := aCreate.Body["ipv6addr"]; present {
+	if _, present := aCreate.Body[wapiFieldIPv6Addr]; present {
 		t.Error("record:a body carries ipv6addr; an IPv4 address must not be written to the IPv6 field")
 	}
 	if got, _ := aCreate.Body[defaultNameName].(string); got != wapiTestFQDN {
@@ -399,7 +400,7 @@ func TestWAPICreateAddressFamilyFields(t *testing.T) {
 	if got, _ := ptrCreate.Body[wapiFieldIPv4Addr].(string); got != wapiTestIPv4 {
 		t.Errorf("record:ptr body ipv4addr = %q, want %q", got, wapiTestIPv4)
 	}
-	if _, present := ptrCreate.Body["ipv6addr"]; present {
+	if _, present := ptrCreate.Body[wapiFieldIPv6Addr]; present {
 		t.Error("record:ptr body carries ipv6addr; an IPv4 PTR target must not be written to the IPv6 field")
 	}
 	if got, _ := ptrCreate.Body[wapiFieldPtrdName].(string); got != wapiTestFQDN {
