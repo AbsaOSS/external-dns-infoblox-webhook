@@ -16,6 +16,54 @@
 ### Bug Fixes
 
 * bump dependencies ([#78](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/78)) ([2f02eed](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/2f02eed6066c9f960566398b3793297e4d8274ad))
+* **ci:** read go version from mod file ([cea0fc4](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/cea0fc465f4c057fdeb29429a6eb2377fee01d5e))
+* **deps:** update module github.com/miekg/dns to v1.1.73 ([42591be](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/42591beb184ba51f40c94cdfd872663b93d9bfad))
+* **deps:** update module github.com/prometheus/client_golang to v1.25.0 ([5b14539](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/5b145396d361943f8f1f8b67ba05f3127799904e))
+* **deps:** update module github.com/sirupsen/logrus to v1.10.2 ([6945136](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/69451364085f882847ba90e5de7c2682337bad73))
+* **deps:** update module github.com/stretchr/testify to v1.12.1 ([a5903de](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/a5903de90ae7f0cb4924a8532d8b69b46ec1bf04))
+* **deps:** update module sigs.k8s.io/external-dns to v0.24.0 ([#93](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/93)) ([2e88a4f](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/2e88a4ff146981d1f0db554170a2490aad31e93c))
+* **infoblox:** compare IPv6 targets in canonical form ([1b615a4](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/1b615a4e04e9099b18151818dfd3b165ddad5874))
+* **infoblox:** select the most specific reverse zone ([#82](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/82)) ([281f471](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/281f47194e26014f43fa974f63f3e588ade08c50))
+* **infoblox:** skip TXT records colliding with a CNAME ([a21fcd8](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/a21fcd8413eb5886bd67483504bd590dfedfdd29)), closes [#23](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/23)
+* **infoblox:** surface WAPI auth and timeout failures in the log ([de59be8](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/de59be83f5cafa5ff82dd3961659b47974a8cfdb)), closes [#50](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/50) [#19](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/19)
+* **infoblox:** update existing CNAME instead of create plus delete ([e75d053](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/e75d053de3b520f94e17298f67867b5f4af92b33)), closes [#63](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/63)
+* migrate goreleaser to v2 format ([90654fa](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/90654fac758d7078697324c6e1a03a34a52df72c))
+
+
+### Miscellaneous Chores
+
+* **deps:** update actions/checkout action to v7 ([59734fb](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/59734fb01e034afddb434207d196756566ee552c))
+* **deps:** update actions/setup-go action to v7 ([dbc240d](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/dbc240dad8a330843ce9553f0aa3d7106878cec6))
+* **deps:** update actions/setup-python action to v7 ([8f26967](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/8f2696758ad0bb43d45d022b9457004a1bd6e6b0))
+* **deps:** update anchore/sbom-action action to v0.24.3 ([da5fe20](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/da5fe20b59e177e41a82118c2444cf073ecc73c8))
+* **deps:** update dependency golangci/golangci-lint to v2.15.0 ([14b0ad7](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/14b0ad7cb690c0d3fabac9ad771d96dc7cf7fe80))
+* **deps:** update docker/login-action action to v4 ([ce0f9e0](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/ce0f9e03be89cb5edcb3fad56f588285ad515ca7))
+* **deps:** update docker/setup-buildx-action action to v4 ([7e35942](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/7e35942b72247b5b04cab6d41ba311cd051a4907))
+* **deps:** update docker/setup-qemu-action action to v4 ([e181ae6](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/e181ae693e88d3c3e197fb29d9c75fdab9a7a5c5))
+* **deps:** update golangci/golangci-lint-action action to v9 ([4a5164d](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/4a5164d5b9b0cca9b96c20db67c5c4a6c9562f09))
+* **deps:** update googleapis/release-please-action action to v5 ([7ff0683](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/7ff0683b57cf37b82bd479c58382e2af58dd5314))
+* **deps:** update goreleaser/goreleaser-action action to v7 ([5df25b8](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/5df25b8381515ef67c7b47c185cf3abd85ea8844))
+* **deps:** update sigstore/cosign-installer action to v3.10.1 ([1796a13](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/1796a13b5b02a2f2ef5a963e85cb718dee884834))
+* **deps:** update sigstore/cosign-installer action to v4 ([a1ada73](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/a1ada73c4f9b531431201de1149baaa71b6797fa))
+* **release:** release 1.8.0 ([7d66c4f](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/7d66c4f014b520909a66242af01e1adaa9ad8472))
+* **release:** release 1.8.0 ([08884eb](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/08884eb35ee8febb3b2cc49afc43fd2374b3f684))
+
+## [1.8.0](https://github.com/AbsaOSS/external-dns-infoblox-webhook/compare/v1.7.2...v1.8.0) (2026-10-28)
+
+
+### Features
+
+* Autocreate missing PTRs, handle notFound errors gracefully ([2949dd5](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/2949dd56e725e1fdff798a54bcbeb284d8e61dc9))
+* **config:** allow configuring the WAPI base path ([2cfe3f3](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/2cfe3f3f300fbb60d9a50b96fc939c782bce68d1)), closes [#18](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/18)
+* **infoblox:** add AAAA (IPv6) record support ([13c9812](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/13c98126a06b2f60d9f3c31615fd11f7e206e65e))
+* **infoblox:** create PTR records for AAAA records ([7b77eb5](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/7b77eb50d508078dbce1df5a4f56f7a2bbfe5ffd))
+* Reduce amount of requests to Infoblox API ([8c7c1eb](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/8c7c1eb3b26b46e5cf7d28d7f43f65c12a9dd098))
+* replace caarlos0/env by alecthomas/kong, allow arguments as configuration ([#77](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/77)) ([ffc4444](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/ffc4444b8fae769d51d19b527e47a8faeb3eadbc))
+
+
+### Bug Fixes
+
+* bump dependencies ([#78](https://github.com/AbsaOSS/external-dns-infoblox-webhook/issues/78)) ([2f02eed](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/2f02eed6066c9f960566398b3793297e4d8274ad))
 * **deps:** update module github.com/miekg/dns to v1.1.73 ([42591be](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/42591beb184ba51f40c94cdfd872663b93d9bfad))
 * **deps:** update module github.com/prometheus/client_golang to v1.25.0 ([5b14539](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/5b145396d361943f8f1f8b67ba05f3127799904e))
 * **deps:** update module github.com/sirupsen/logrus to v1.10.2 ([6945136](https://github.com/AbsaOSS/external-dns-infoblox-webhook/commit/69451364085f882847ba90e5de7c2682337bad73))
