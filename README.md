@@ -78,8 +78,9 @@ DOMAIN_FILTER="cloud.example, 1.2.3.0/24, 2001:db8::/64"
 | SERVER_READ_TIMEOUT            |               | false    |
 | SERVER_WRITE_TIMEOUT           |               | false    |
 | SERVER_READ_HEADER_TIMEOUT     | 5s            | false    |
-| SERVER_IDLE_TIMEOUT           | 30s           | false    |
-| SERVER_MAX_BODY_SIZE          | 33554432      | false    |
+| SERVER_IDLE_TIMEOUT            | 30s           | false    |
+| SERVER_MAX_BODY_SIZE           | 33554432      | false    |
+| SERVER_SHUTDOWN_TIMEOUT        | 0             | false    |
 | DOMAIN_FILTER                  |               | false    |
 | EXCLUDE_DOMAIN_FILTER          |               | false    |
 | REGEXP_DOMAIN_FILTER           |               | false    |
