@@ -303,9 +303,10 @@ func TestApplyChangesLogsRejectedWrite(t *testing.T) {
 			endpoint.NewEndpoint("new.example.com", endpoint.RecordTypeCNAME, "target.example.com"),
 		},
 	})
-	// A rejected write is logged rather than failing the whole batch, so the
-	// remaining changes are still applied.
-	require.NoError(t, err)
+	// A rejected write is logged and aborts the batch: continuing could leave a
+	// data record without its ownership TXT (see submitChanges). The unreached
+	// changes are retried on the next reconcile.
+	require.Error(t, err)
 
 	entry := findEntry(hook, log.ErrorLevel, WAPIFailureAuth)
 	require.NotNil(t, entry, "expected a rejected write to be logged at error level, got: %s", dumpEntries(hook))
