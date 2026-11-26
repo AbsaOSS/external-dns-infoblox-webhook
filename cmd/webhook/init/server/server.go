@@ -61,7 +61,9 @@ func NewServer() *WebhookServer {
 // always installs a signal handler and catches the first signal rather than
 // exiting on its default disposition. It mirrors the endpoints registered by
 // api.StartHTTPApi. Start returns an error if it cannot bind the configured
-// address; otherwise it blocks until the server has shut down.
+// address or if the server stops with an error (including one that races with
+// a shutdown signal), so the caller never exits 0 after a server failure;
+// otherwise it blocks until the server has shut down and returns nil.
 func (wh *WebhookServer) Start(config configuration.Config, p provider.Provider) error {
 	addr := fmt.Sprintf("%s:%d", config.ServerHost, config.ServerPort)
 	l, err := net.Listen("tcp", addr)
@@ -72,8 +74,7 @@ func (wh *WebhookServer) Start(config configuration.Config, p provider.Provider)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	wh.serve(ctx, stop, l, config, p)
-	return nil
+	return wh.serve(ctx, stop, l, config, p)
 }
 
 // serve runs the webhook API on l, signals readiness on wh.Channel once it is
@@ -90,7 +91,11 @@ func (wh *WebhookServer) Start(config configuration.Config, p provider.Provider)
 // termination, which would strand a half-created or half-deleted record in the
 // grid. serve is split out from Start so tests can drive it with a context
 // rather than real OS signals.
-func (wh *WebhookServer) serve(ctx context.Context, stop func(), l net.Listener, config configuration.Config, p provider.Provider) {
+//
+// serve returns nil after a clean shutdown and a non-nil error if the server
+// stopped for any reason other than http.ErrServerClosed, including a Serve
+// error that raced with the shutdown signal.
+func (wh *WebhookServer) serve(ctx context.Context, stop func(), l net.Listener, config configuration.Config, p provider.Provider) error {
 	// These routes mirror api.StartHTTPApi (see the vendored external-dns version in go.mod).
 	// We register them by hand rather than calling StartHTTPApi because that
 	// helper owns the net listener and the s.Serve call, leaving no seam for a
@@ -126,9 +131,9 @@ func (wh *WebhookServer) serve(ctx context.Context, stop func(), l net.Listener,
 	select {
 	case err := <-errCh:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("webhook server stopped: %s", err)
+			return fmt.Errorf("webhook server stopped: %w", err)
 		}
-		return
+		return nil
 	case <-ctx.Done():
 		// The drain is starting; deregister the signal handler so a second
 		// SIGINT/SIGTERM terminates the process immediately (its default
@@ -159,10 +164,12 @@ func (wh *WebhookServer) serve(ctx context.Context, stop func(), l net.Listener,
 	// Surface a genuine Serve error that raced with the shutdown signal: if
 	// ctx.Done() won the select above, errCh may still hold a real listen/accept
 	// error rather than the http.ErrServerClosed that Close/Shutdown produces.
-	// Without this read that error would be lost and the process would exit 0.
+	// Return it, like the first select branch does, so the process does not
+	// exit 0 after a server failure.
 	if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Errorf("webhook server stopped with error during shutdown: %s", err)
+		return fmt.Errorf("webhook server stopped with error during shutdown: %w", err)
 	}
+	return nil
 }
 
 func (wh *WebhookServer) StartHealth(config configuration.Config) {
